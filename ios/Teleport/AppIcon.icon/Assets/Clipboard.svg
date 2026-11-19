@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- board -->
+  <path fill="#FFFFFF" d="M344,236 H680 A88,88 0 0 1 768,324 V756 A88,88 0 0 1 680,844 H344 A88,88 0 0 1 256,756 V324 A88,88 0 0 1 344,236 Z"/>
+  <!-- clip: wider base, rounded top, hanging hole -->
+  <path fill="#FFFFFF" fill-rule="evenodd" d="M452,168 H572 A44,44 0 0 1 616,212 V236 H660 A28,28 0 0 1 688,264 V284 A28,28 0 0 1 660,312 H364 A28,28 0 0 1 336,284 V264 A28,28 0 0 1 364,236 H408 V212 A44,44 0 0 1 452,168 Z M512,190 A22,22 0 1 0 512,234 A22,22 0 1 0 512,190 Z"/>
+</svg>

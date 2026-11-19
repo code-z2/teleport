@@ -7,7 +7,8 @@
     <application
         android:name=".TeleportApp"
         android:allowBackup="false"
-        android:icon="@android:drawable/sym_def_app_icon"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Teleport"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 

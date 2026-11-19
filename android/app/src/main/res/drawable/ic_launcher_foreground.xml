@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Same shapes as ios/Teleport/AppIcon.icon (1024 design space), scaled into the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <group android:scaleX="0.08" android:scaleY="0.08" android:translateX="13.04" android:translateY="13.52">
+        <path android:fillColor="#FFFFFFFF" android:pathData="M344,236 H680 A88,88 0 0 1 768,324 V756 A88,88 0 0 1 680,844 H344 A88,88 0 0 1 256,756 V324 A88,88 0 0 1 344,236 Z" />
+        <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd" android:pathData="M452,168 H572 A44,44 0 0 1 616,212 V236 H660 A28,28 0 0 1 688,264 V284 A28,28 0 0 1 660,312 H364 A28,28 0 0 1 336,284 V264 A28,28 0 0 1 364,236 H408 V212 A44,44 0 0 1 452,168 Z M512,190 A22,22 0 1 0 512,234 A22,22 0 1 0 512,190 Z" />
+        <path android:fillColor="#FF4F46E5" android:pathData="M632.2,419.8 L632.2,603.6 L568.6,540.0 L420.1,688.5 A40,40 0 0 1 363.5,631.9 L512.0,483.4 L448.4,419.8 Z" />
+    </group>
+</vector>
