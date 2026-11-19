@@ -25,9 +25,36 @@
   "files": [
     {
       "kind": "group",
+      "path": "ActionExtension",
+      "children": [
+        { "path": "ActionRequestHandler.swift", "target-membership": [ "TeleportAction/compile-sources" ] },
+        { "path": "Info.plist" },
+        { "path": "TeleportAction.entitlements" },
+      ],
+    }, {
+      "kind": "group",
       "path": "Config",
       "children": [
         { "path": "Teleport.xcconfig" },
+      ],
+    }, {
+      "kind": "group",
+      "path": "ExtensionSupport",
+      "children": [
+        {
+          "path": "ClipExtractor.swift",
+          "target-membership": [
+            "TeleportAction/compile-sources",
+            "TeleportShare/compile-sources",
+          ],
+        }, {
+          "path": "ShareSuggestion.swift",
+          "target-membership": [
+            "Teleport/compile-sources",
+            "TeleportAction/compile-sources",
+            "TeleportShare/compile-sources",
+          ],
+        },
       ],
     }, {
       "kind": "group",
@@ -94,6 +121,7 @@
       "name": "Products",
       "children": [
         { "path": "<PRODUCTS>/Teleport.app", "id": "8789D60011F8B14C7DD9B4D4", "type": "wrapper.application", "index": false },
+        { "path": "<PRODUCTS>/TeleportAction.appex", "id": "973D3B22FFE86166294C7C75", "type": "wrapper.app-extension", "index": false, "target-membership": [ { "build-phase": "Teleport/copy/Embed Foundation Extensions", "header-preservation": "remove-on-copy" } ] },
         { "path": "<PRODUCTS>/TeleportLiveActivity.appex", "id": "21CDC007BB172C2E137A20D9", "type": "wrapper.app-extension", "index": false, "target-membership": [ { "build-phase": "Teleport/copy/Embed Foundation Extensions", "header-preservation": "remove-on-copy" } ] },
         { "path": "<PRODUCTS>/TeleportNotificationService.appex", "id": "C701AA53418072B9E1145F23", "type": "wrapper.app-extension", "index": false, "target-membership": [ { "build-phase": "Teleport/copy/Embed Foundation Extensions", "header-preservation": "remove-on-copy" } ] },
         { "path": "<PRODUCTS>/TeleportShare.appex", "id": "35E30A6D815AAE7632797490", "type": "wrapper.app-extension", "index": false, "target-membership": [ { "build-phase": "Teleport/copy/Embed Foundation Extensions", "header-preservation": "remove-on-copy" } ] },
@@ -109,6 +137,7 @@
       "legacy-provisioning-style": "automatic",
       "legacy-team-id": "$(TELEPORT_TEAM_ID)",
       "dependencies": [
+        "TeleportAction",
         "TeleportShare",
         "TeleportNotificationService",
         "TeleportLiveActivity",
@@ -144,6 +173,35 @@
           "@executable_path/Frameworks",
         ],
         "PRODUCT_BUNDLE_IDENTIFIER": "$(TELEPORT_BUNDLE_ID)",
+        "SDKROOT": "iphoneos",
+        "TARGETED_DEVICE_FAMILY": "1,2",
+      },
+    }, {
+      "name": "TeleportAction",
+      "id": "3BB75B2801EC7E87193E936E",
+      "product": "Products/TeleportAction.appex",
+      "product-type": "app-extension",
+      "legacy-provisioning-style": "automatic",
+      "legacy-team-id": "$(TELEPORT_TEAM_ID)",
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+      ],
+      "package-product-members": [
+        {
+          "product-name": "TeleportCore",
+          "build-phase": { "build-phase": "frameworks" },
+        },
+      ],
+      "build-settings": {
+        "CODE_SIGN_ENTITLEMENTS": "ActionExtension/TeleportAction.entitlements",
+        "INFOPLIST_FILE": "ActionExtension/Info.plist",
+        "LD_RUNPATH_SEARCH_PATHS": [
+          "$(inherited)",
+          "@executable_path/Frameworks",
+          "@executable_path/../../Frameworks",
+        ],
+        "PRODUCT_BUNDLE_IDENTIFIER": "$(TELEPORT_BUNDLE_ID).action",
         "SDKROOT": "iphoneos",
         "TARGETED_DEVICE_FAMILY": "1,2",
       },

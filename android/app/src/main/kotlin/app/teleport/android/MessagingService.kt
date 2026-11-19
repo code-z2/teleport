@@ -1,23 +1,11 @@
 package app.teleport.android
 
-import android.Manifest
-import android.app.Notification
-import android.app.PendingIntent
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.content.FileProvider
-import app.teleport.core.Clip
+import app.teleport.core.OpenException
 import app.teleport.core.Received
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
-import java.io.File
+import java.io.IOException
 
 /**
  * High-priority FCM data message → verify + decrypt → clipboard.
@@ -30,20 +18,36 @@ class MessagingService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
         val env = message.data["env"] ?: return
         val app = TeleportApp.of(this)
-        try {
-            when (val r = app.teleport.receive(env)) {
-                is Received.ClipReceived -> {
-                    val clipData = toClipData(r.clip, r.id)
-                    Handler(Looper.getMainLooper()).post {
-                        getSystemService(ClipboardManager::class.java).setPrimaryClip(clipData)
-                    }
-                    notify("Copied from ${app.teleport.store.peer?.name ?: "your phone"}", preview(r.clip))
-                }
-                is Received.PeerUpdated -> Log.i(TAG, "peer tokens updated")
-            }
+        val received = try {
+            app.teleport.receive(env)
+        } catch (e: OpenException) {
+            Log.w(TAG, "rejected envelope: ${e.code}")
+            return ClipDelivery.notifyError(this, "Couldn't verify a clip (${e.code}). Re-pair if this keeps happening.")
         } catch (e: Exception) {
-            Log.w(TAG, "rejected envelope: ${e.message}")
-            notify("Teleport", "Couldn't verify a clip (${e.message})")
+            Log.w(TAG, "receive failed: ${e.message}")
+            return ClipDelivery.notifyError(this, "Couldn't read a clip: ${e.message}")
+        }
+
+        when (received) {
+            is Received.ClipReceived -> ClipDelivery.deliver(this, received.clip, received.id)
+            is Received.BlobPending -> {
+                // Images and long text are downloaded from the relay. Background network can
+                // be blocked (background data off on mobile data, Data Saver): retry once,
+                // then hand off to the app, which downloads when opened.
+                for (attempt in 1..2) {
+                    try {
+                        return ClipDelivery.deliver(this, app.teleport.fetchBlob(received.pointer), received.id)
+                    } catch (e: IOException) {
+                        Log.w(TAG, "blob download attempt $attempt failed: ${e.message}")
+                        if (attempt == 1) Thread.sleep(2_000)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "blob failed: ${e.message}")
+                        return ClipDelivery.notifyError(this, "Couldn't download a clip: ${e.message}")
+                    }
+                }
+                ClipDelivery.notifyPending(this, received.pointer, received.id)
+            }
+            is Received.PeerUpdated -> Log.i(TAG, "peer tokens updated")
         }
     }
 
@@ -53,39 +57,6 @@ class MessagingService : FirebaseMessagingService() {
         app.teleport.store.ownFcmToken = token
         if (changed) runCatching { app.teleport.announceToken(deviceName) }
             .onFailure { Log.w(TAG, "token announce failed: ${it.message}") }
-    }
-
-    private fun toClipData(clip: Clip, id: String): ClipData = when (clip) {
-        is Clip.Text -> ClipData.newPlainText("Teleport", clip.text)
-        is Clip.Bytes -> {
-            val ext = when (clip.mime) { "image/png" -> "png"; "image/gif" -> "gif"; else -> "jpg" }
-            val dir = File(cacheDir, "clips").apply { mkdirs() }
-            dir.listFiles()?.filter { it.lastModified() < System.currentTimeMillis() - 3_600_000 }?.forEach { it.delete() }
-            val file = File(dir, "$id.$ext").apply { writeBytes(clip.data) }
-            val uri = FileProvider.getUriForFile(this, "$packageName.clips", file)
-            ClipData.newUri(contentResolver, "Teleport", uri)
-        }
-    }
-
-    private fun preview(clip: Clip) = when (clip) {
-        is Clip.Text -> clip.text.take(200)
-        is Clip.Bytes -> "Image (${clip.data.size / 1024} KB)"
-    }
-
-    private fun notify(title: String, body: String) {
-        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-        val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
-        )
-        val n = Notification.Builder(this, TeleportApp.CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_menu_upload)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setContentIntent(open)
-            .setAutoCancel(true)
-            .setTimeoutAfter(5 * 60_000)
-            .build()
-        NotificationManagerCompat.from(this).notify(1, n)
     }
 
     companion object {

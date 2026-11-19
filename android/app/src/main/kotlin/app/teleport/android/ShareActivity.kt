@@ -34,7 +34,9 @@ class ShareActivity : Activity() {
         // Application-scoped so finishing the activity doesn't cancel the upload.
         appScope.launch {
             val message = try {
-                app.teleport.send(clip); "Sent ✓"
+                app.teleport.send(clip)
+                app.teleport.store.peer?.let { PeerShortcut.publish(app, it) }
+                "Sent ✓"
             } catch (e: NotPairedException) {
                 "Open Teleport to pair first"
             } catch (e: PeerGoneException) {

@@ -155,9 +155,14 @@ export async function sendAll(sa: ServiceAccount, messages: object[], now: numbe
         body: JSON.stringify({ message }),
       });
       if (res.ok) return { ok: true };
-      // Surface only FCM's error status (e.g. UNREGISTERED), never payloads.
-      const body = (await res.json().catch(() => ({}))) as { error?: { status?: string } };
-      return { ok: false, status: res.status, error: body.error?.status ?? "UNKNOWN" };
+      // Surface only FCM's error code, never payloads. The specific code lives in
+      // details[].errorCode (e.g. THIRD_PARTY_AUTH_ERROR = missing/invalid APNs key,
+      // UNREGISTERED = dead token); `status` alone is too vague (UNAUTHENTICATED, NOT_FOUND).
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: { status?: string; details?: { errorCode?: string }[] };
+      };
+      const code = body.error?.details?.find((d) => d.errorCode)?.errorCode;
+      return { ok: false, status: res.status, error: code ?? body.error?.status ?? "UNKNOWN" };
     }),
   );
 }

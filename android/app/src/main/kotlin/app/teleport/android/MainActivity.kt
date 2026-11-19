@@ -47,7 +47,7 @@ class MainActivity : ComponentActivity() {
     private val scan = registerForActivityResult(ScanContract()) { result ->
         val code = result.contents ?: return@registerForActivityResult
         status = runCatching { TeleportApp.of(this).teleport.pair(code) }
-            .onSuccess { peer = it }
+            .onSuccess { peer = it; PeerShortcut.publish(this, it) }
             .fold({ "Paired with ${it.name}" }, { "Not a Teleport code" })
     }
 
@@ -60,14 +60,9 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch(Dispatchers.IO) {
             peer = teleport.store.peer
-            if (FirebaseApp.getApps(this@MainActivity).isEmpty()) {
-                status = "google-services.json missing — no push token"
-            } else {
-                FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
-                    teleport.store.ownFcmToken = token
-                    card = teleport.myCard(deviceName).encoded()
-                }
-            }
+            peer?.let { PeerShortcut.publish(this@MainActivity, it) }
+            // Show the last known token right away; refreshPushToken() (onResume) updates it.
+            if (teleport.store.ownFcmToken != null) card = teleport.myCard(deviceName).encoded()
         }
 
         setContent {
@@ -95,6 +90,59 @@ class MainActivity : ComponentActivity() {
                     }
                     if (status.isNotEmpty()) Text(status)
                 }
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshPushToken()
+        finishPendingDownloads()
+    }
+
+    /** Images whose background download was blocked: the app is in front now, so fetch them. */
+    private fun finishPendingDownloads() {
+        val pending = PendingBlobs.all(this)
+        if (pending.isEmpty()) return
+        val teleport = TeleportApp.of(this).teleport
+        lifecycleScope.launch(Dispatchers.IO) {
+            for ((id, pointer) in pending) {
+                status = "Downloading image…"
+                status = runCatching { teleport.fetchBlob(pointer) }.fold(
+                    { clip ->
+                        PendingBlobs.remove(this@MainActivity, id)
+                        ClipDelivery.deliver(this@MainActivity, clip, id)
+                        "Image copied — use Save in the notification to keep it"
+                    },
+                    { e ->
+                        if (e is app.teleport.core.RelayException && e.status == 404) PendingBlobs.remove(this@MainActivity, id)
+                        "Image download failed: ${e.message}"
+                    },
+                )
+            }
+        }
+    }
+
+    /** Ask FCM for the token every time the screen is shown, and surface failures. */
+    @Suppress("DEPRECATION") // getToken(): still supported; FID-based registration is a later migration.
+    private fun refreshPushToken() {
+        if (FirebaseApp.getApps(this).isEmpty()) {
+            status = "google-services.json missing — no push token"
+            return
+        }
+        val teleport = TeleportApp.of(this).teleport
+        FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+            val token = task.result.takeIf { task.isSuccessful }
+            if (token == null) {
+                val cause = generateSequence<Throwable>(task.exception) { it.cause }.last()
+                status = "Push token failed: ${cause.message} — check network, then reopen the app"
+                return@addOnCompleteListener
+            }
+            lifecycleScope.launch(Dispatchers.IO) {
+                val changed = teleport.store.ownFcmToken != token
+                teleport.store.ownFcmToken = token
+                card = teleport.myCard(deviceName).encoded()
+                if (changed) runCatching { teleport.announceToken(deviceName) }
             }
         }
     }

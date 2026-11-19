@@ -31,6 +31,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         var body: String
         var attachment: URL?
         var actionable = true
+        var isImage = false
     }
 
     private func deliver(_ rendered: Rendered?) {
@@ -44,6 +45,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             content.title = rendered.title
             content.body = rendered.body
             if !rendered.actionable { content.categoryIdentifier = "" }
+            if rendered.isImage { content.categoryIdentifier = "CLIP_IMAGE" }
             if let url = rendered.attachment, let a = try? UNNotificationAttachment(identifier: "clip", url: url) {
                 content.attachments = [a]
             }
@@ -60,13 +62,16 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
                 return Rendered(title: "Clip from \(from)", body: String(text.prefix(300)))
             case .clip(.image(let data, let mime), let id):
                 return Rendered(
-                    title: "Image from \(from)", body: "Tap Copy to put it on the clipboard",
-                    attachment: writeAttachment(data, mime: mime, id: id))
+                    title: "Image from \(from)", body: "Press and hold to Copy or Save to Photos",
+                    attachment: writeAttachment(data, mime: mime, id: id), isImage: true)
             case .peerUpdated(let peer):
                 return Rendered(title: "Teleport", body: "\(peer.name) reconnected", actionable: false)
             }
+        } catch let error as OpenError {
+            return Rendered(title: "Teleport", body: "Couldn't verify a clip (\(error.rawValue)). Re-pair if this keeps happening.", actionable: false)
         } catch {
-            return Rendered(title: "Teleport", body: "Couldn't verify a clip (\(error))", actionable: false)
+            // Usually a network failure downloading an image; Copy re-downloads it.
+            return Rendered(title: "Teleport", body: "Couldn't download a clip: \(error.localizedDescription). Tap Copy to try again.")
         }
     }
 

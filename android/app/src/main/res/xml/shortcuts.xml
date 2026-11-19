@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Direct Share: dynamic shortcuts in this category show up in the share sheet's
+     top row (where chat contacts appear) and open ShareActivity directly. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <share-target android:targetClass="app.teleport.android.ShareActivity">
+        <data android:mimeType="text/plain" />
+        <data android:mimeType="image/*" />
+        <category android:name="app.teleport.android.category.SEND_TO_PEER" />
+    </share-target>
+</shortcuts>

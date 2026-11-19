@@ -15,6 +15,7 @@ sealed interface Clip {
 
 sealed interface Received {
     data class ClipReceived(val clip: Clip, val id: String) : Received
+    data class BlobPending(val pointer: BlobPointer, val id: String) : Received
     data class PeerUpdated(val peer: Peer) : Received
 }
 
@@ -76,13 +77,9 @@ class Teleport(
         if (!store.markSeen(env.id)) throw OpenException("replay")
         return when (env.k) {
             KIND_TEXT -> Received.ClipReceived(Clip.Text(String(pt, Charsets.UTF_8)), env.id)
-            KIND_BLOB -> {
-                val p = TeleportJson.decodeFromString(BlobPointer.serializer(), String(pt))
-                val bytes = TeleportCrypto.openBlob(relay.getBlob(p.id), p.key.unb64u(), p.n.unb64u())
-                runCatching { relay.deleteBlob(p.id) }
-                val clip = if (p.mime.startsWith("text/")) Clip.Text(String(bytes, Charsets.UTF_8)) else Clip.Bytes(bytes, p.mime)
-                Received.ClipReceived(clip, env.id)
-            }
+            // Verified and decrypted, but the content still has to be downloaded:
+            // the caller calls fetchBlob(), and can retry it later if the network is blocked.
+            KIND_BLOB -> Received.BlobPending(TeleportJson.decodeFromString(BlobPointer.serializer(), String(pt)), env.id)
             else -> {
                 val u = TeleportJson.decodeFromString(PeerUpdate.serializer(), String(pt))
                 peer = peer.copy(fcm = u.fcm, la = u.la, name = u.name ?: peer.name)
@@ -90,5 +87,12 @@ class Teleport(
                 Received.PeerUpdated(peer)
             }
         }
+    }
+
+    /** Downloads and decrypts a blob, then deletes it from the relay. Throws IOException on network failure. */
+    fun fetchBlob(p: BlobPointer): Clip {
+        val bytes = TeleportCrypto.openBlob(relay.getBlob(p.id), p.key.unb64u(), p.n.unb64u())
+        runCatching { relay.deleteBlob(p.id) }
+        return if (p.mime.startsWith("text/")) Clip.Text(String(bytes, Charsets.UTF_8)) else Clip.Bytes(bytes, p.mime)
     }
 }

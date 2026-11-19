@@ -1,4 +1,6 @@
 import CoreImage.CIFilterBuiltins
+import FirebaseCore
+import Photos
 import SwiftUI
 import TeleportCore
 import VisionKit
@@ -9,19 +11,25 @@ struct ContentView: View {
     @State private var scanning = false
     @State private var status = ""
     @State private var testText = "Hello from iPhone"
+    /// Bumped whenever push tokens change, so the QR section re-reads the store.
+    @State private var pushStateVersion = 0
 
     var body: some View {
         NavigationStack {
             Form {
                 if let teleport {
                     Section("This iPhone") {
-                        if let card = try? teleport.myCard(name: UIDevice.current.name).encoded(),
-                           teleport.store.ownFCMToken != nil {
+                        let _ = pushStateVersion
+                        if teleport.store.ownFCMToken != nil,
+                           let card = try? teleport.myCard(name: UIDevice.current.name).encoded() {
                             QRCode(text: card).frame(maxWidth: .infinity)
                             Text("Scan this from the other phone.").font(.footnote).foregroundStyle(.secondary)
+                        } else if FirebaseApp.app() == nil {
+                            Text("GoogleService-Info.plist is missing from the app bundle.").foregroundStyle(.red)
+                        } else if let error = AppDelegate.pushRegistrationError {
+                            Text("Push registration failed: \(error)").foregroundStyle(.red)
                         } else {
-                            Text("Waiting for a push token… (needs GoogleService-Info.plist and notification permission)")
-                                .foregroundStyle(.secondary)
+                            Text("Waiting for a push token…").foregroundStyle(.secondary)
                         }
                     }
                     Section("Paired device") {
@@ -41,12 +49,26 @@ struct ContentView: View {
                 if !status.isEmpty { Section { Text(status).font(.footnote) } }
             }
             .navigationTitle("Teleport")
-            .onAppear { peer = teleport?.store.peer }
+            .onAppear {
+                peer = teleport?.store.peer
+                if let peer {
+                    ShareSuggestion.donate(for: peer)
+                    // Ask once for add-only Photos access, so "Save" also works from the
+                    // Live Activity (a background intent can't show the prompt itself).
+                    if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined {
+                        PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in }
+                    }
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .teleportPushStateChanged)) { _ in
+                pushStateVersion += 1
+            }
             .sheet(isPresented: $scanning) {
                 QRScanner { code in
                     scanning = false
                     do {
                         peer = try teleport?.pair(with: code)
+                        if let peer { ShareSuggestion.donate(for: peer) }
                         status = "Paired with \(peer?.name ?? "?")"
                     } catch {
                         status = "Not a Teleport code"

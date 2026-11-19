@@ -3,6 +3,7 @@
 
 import ActivityKit
 import AppIntents
+import Photos
 import TeleportCore
 import UIKit
 
@@ -35,6 +36,44 @@ struct CopyClipIntent: LiveActivityIntent {
             await activity.end(nil, dismissalPolicy: .immediate)
         }
         return .result()
+    }
+}
+
+/// "Save" on the Live Activity for images: adds the image to Photos without opening the app.
+/// Needs add-only Photos access, which the app asks for once it's paired (a background
+/// intent can't show the permission prompt itself).
+struct SaveClipIntent: LiveActivityIntent {
+    static let title: LocalizedStringResource = "Save Clip to Photos"
+    static let isDiscoverable = false
+
+    @Parameter(title: "Envelope") var env: String
+
+    init() {}
+    init(env: String) { self.env = env }
+
+    func perform() async throws -> some IntentResult {
+        let teleport = try Teleport()
+        switch try await teleport.receive(env, firstDelivery: false) {
+        case .clip(.image(let data, _), _): try await PhotoSaver.save(data)
+        case .clip(let clip, _): await ClipboardWriter.write(clip)  // a long text "blob": copy instead
+        default: break
+        }
+        for activity in Activity<ClipActivityAttributes>.activities {
+            await activity.end(nil, dismissalPolicy: .immediate)
+        }
+        return .result()
+    }
+}
+
+enum PhotoSaver {
+    enum Failure: Error { case notAllowed }
+
+    static func save(_ data: Data) async throws {
+        let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+        guard status == .authorized || status == .limited else { throw Failure.notAllowed }
+        try await PHPhotoLibrary.shared().performChanges {
+            PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil)
+        }
     }
 }
 

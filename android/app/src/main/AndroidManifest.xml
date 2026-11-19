@@ -15,6 +15,10 @@
         <activity
             android:name=".MainActivity"
             android:exported="true">
+            <!-- Declares the Direct Share target (paired device in the share sheet's top row). -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -60,5 +64,9 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/clip_paths" />
         </provider>
+        <!-- "Save" button on image notifications. -->
+        <receiver
+            android:name=".SaveImageReceiver"
+            android:exported="false" />
     </application>
 </manifest>

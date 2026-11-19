@@ -26,8 +26,14 @@
 	<string>public.app-category.productivity</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Scan the pairing code shown on your other phone.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save images you receive from your other phone to Photos.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INSendMessageIntent</string>
+	</array>
 	<key>TeleportAppGroup</key>
 	<string>group.$(TELEPORT_BUNDLE_ID)</string>
 	<key>TeleportKeychainGroup</key>
