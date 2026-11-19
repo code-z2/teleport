@@ -1,0 +1,6 @@
+Config/Teleport.xcconfig
+Teleport.xcodeproj/
+Teleport/GoogleService-Info.plist
+.build/
+build/
+Packages/TeleportCore/.build/

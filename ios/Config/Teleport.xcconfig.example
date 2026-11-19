@@ -1,0 +1,14 @@
+// Copy to Teleport.xcconfig (git-ignored) and fill in.
+
+// Your Apple Developer team ID (10 chars).
+TELEPORT_TEAM_ID =
+
+// Base bundle id. Extensions append .share / .nse / .liveactivity.
+// App Group becomes group.<this>; keychain group <TeamID>.<this>.shared.
+TELEPORT_BUNDLE_ID = com.example.teleport
+
+// Worker URL. xcconfig treats // as a comment, hence the $() trick.
+TELEPORT_RELAY_URL = https:/$()/teleport-relay.YOUR-SUBDOMAIN.workers.dev
+
+// Must match the worker's RELAY_KEY secret (≥ 32 chars).
+TELEPORT_RELAY_KEY =
