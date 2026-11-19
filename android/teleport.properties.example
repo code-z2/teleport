@@ -1,5 +1,5 @@
 # Copy to teleport.properties (git-ignored).
-applicationId=com.example.teleport
+applicationId=com.peteranyaogu.teleport
 relayUrl=https://teleport-relay.YOUR-SUBDOMAIN.workers.dev
 # Must match the worker's RELAY_KEY secret (>= 32 chars).
 relayKey=

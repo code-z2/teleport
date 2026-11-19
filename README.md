@@ -55,23 +55,29 @@ cd android && ./gradlew :core:test
 
 ```bash
 cd worker
-npx wrangler r2 bucket create teleport-blobs
+npx wrangler r2 bucket create teleport-blobs     # answer "no" when it offers to add a binding
 npx wrangler r2 bucket lifecycle add teleport-blobs expire-1d --expire-days 1
-openssl rand -base64 36 | npx wrangler secret put RELAY_KEY
+openssl rand -hex 32                             # save this: the relay key
+npx wrangler secret put RELAY_KEY                # paste it
 npx wrangler secret put FCM_SERVICE_ACCOUNT < path/to/service-account.json
 npx wrangler deploy
 ```
 
-Keep the `RELAY_KEY` value. Both apps need it. (Print it once with
-`openssl rand -base64 36` and paste it into both prompts if you prefer.)
+Run all of these from `worker/`. Outside that folder, `npx` uses a global
+Wrangler that can't find `wrangler.jsonc`. Both apps need the relay key.
 
 ### 3. iOS
 
 ```bash
 cd ios
 cp Config/Teleport.xcconfig.example Config/Teleport.xcconfig   # team id, bundle id, relay URL + key
-xcodegen && open Teleport.xcodeproj
+open Teleport.xcodeproj
 ```
+
+- The project uses Xcode 27's JSON format
+  (`Teleport.xcodeproj/project.xcproj`), so it's readable and diffs cleanly.
+  Edit it in Xcode or by hand. After hand edits, run
+  `xcrun xcprojformatter --update Teleport.xcodeproj`.
 
 - Automatic signing creates the App Group (`group.<bundle id>`) and the keychain
   group.

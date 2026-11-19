@@ -19,7 +19,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = teleport.getProperty("applicationId", "com.example.teleport")
+        applicationId = teleport.getProperty("applicationId", "com.peteranyaogu.teleport")
         minSdk = 31 // Keystore ECDH (PURPOSE_AGREE_KEY)
         targetSdk = 36
         versionCode = 1

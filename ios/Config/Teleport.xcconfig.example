@@ -5,7 +5,7 @@ TELEPORT_TEAM_ID =
 
 // Base bundle id. Extensions append .share / .nse / .liveactivity.
 // App Group becomes group.<this>; keychain group <TeamID>.<this>.shared.
-TELEPORT_BUNDLE_ID = com.example.teleport
+TELEPORT_BUNDLE_ID = com.peteranyaogu.teleport
 
 // Worker URL. xcconfig treats // as a comment, hence the $() trick.
 TELEPORT_RELAY_URL = https:/$()/teleport-relay.YOUR-SUBDOMAIN.workers.dev

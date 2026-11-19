@@ -22,6 +22,8 @@
 	<string>1</string>
 	<key>FirebaseAppDelegateProxyEnabled</key>
 	<true/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Scan the pairing code shown on your other phone.</string>
 	<key>NSSupportsLiveActivities</key>

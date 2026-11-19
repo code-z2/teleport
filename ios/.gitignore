@@ -1,6 +1,8 @@
 Config/Teleport.xcconfig
-Teleport.xcodeproj/
 Teleport/GoogleService-Info.plist
+Teleport.xcodeproj/xcuserdata/
+Teleport.xcodeproj/project.xcworkspace/xcuserdata/
 .build/
 build/
 Packages/TeleportCore/.build/
+xcuserdata/
