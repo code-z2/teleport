@@ -81,6 +81,8 @@ final class ShareViewController: UIViewController {
             try await teleport.send(clip, to: peer)
             ShareSuggestion.donate(for: peer)
             finish("Sent to \(peer.name) ✓")
+        } catch RelayError.offline {
+            finish("\(peer.name) is offline")
         } catch {
             finish(ClipExtractor.message(for: error))
         }

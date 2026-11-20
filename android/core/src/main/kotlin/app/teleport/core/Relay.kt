@@ -15,6 +15,9 @@ class RelayException(val status: Int, message: String) : Exception(message)
 /** 410 from the relay: the peer's push token is dead. */
 class PeerGoneException : Exception("peer push token is no longer valid")
 
+/** 503 from the relay: the Mac isn't connected to its mailbox. */
+class OfflineException : Exception("offline")
+
 /** Blocking HTTP client (call from Dispatchers.IO). HttpURLConnection keeps core dependency-free. */
 class RelayClient(private val baseUrl: String, private val relayKey: String) {
 
@@ -35,6 +38,7 @@ class RelayClient(private val baseUrl: String, private val relayKey: String) {
             val stream = if (status in 200..299) conn.inputStream else conn.errorStream
             val bytes = stream?.use { it.readBytes() } ?: ByteArray(0)
             if (status == 410) throw PeerGoneException()
+            if (status == 503) throw OfflineException()
             if (status !in 200..299) throw RelayException(status, String(bytes))
             return bytes
         } finally {
@@ -43,13 +47,16 @@ class RelayClient(private val baseUrl: String, private val relayKey: String) {
     }
 
     fun send(env: Envelope, to: Peer) {
-        // Macs are reached through their relay mailbox (phase 2); phones by push.
-        val fcm = to.fcm?.takeIf { it.isNotEmpty() } ?: throw RelayException(0, "${to.name} has no push address yet")
+        // Macs are reached through their relay mailbox (a live connection); phones by push.
         val body = buildJsonObject {
             put("to", buildJsonObject {
                 put("platform", to.platform)
-                put("fcm", fcm)
-                if (to.platform == "ios" && to.la != null) put("la", to.la)
+                if (to.platform == "mac") {
+                    put("mailbox", to.mailbox ?: throw RelayException(0, "${to.name} has no mailbox"))
+                } else {
+                    put("fcm", to.fcm?.takeIf { it.isNotEmpty() } ?: throw RelayException(0, "${to.name} has no push address yet"))
+                    if (to.platform == "ios" && to.la != null) put("la", to.la)
+                }
             })
             put("env", Json.parseToJsonElement(env.toJson()))
         }

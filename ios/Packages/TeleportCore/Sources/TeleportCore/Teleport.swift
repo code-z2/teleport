@@ -51,7 +51,9 @@ public struct Teleport: Sendable {
         PairingCard(
             name: name, platform: platform,
             ka: keys.agreement.publicKey, ks: keys.signing.publicKey,
-            fcm: store.ownFCMToken, la: store.ownLiveActivityToken)
+            fcm: store.ownFCMToken, la: store.ownLiveActivityToken,
+            // A Mac is reached through its relay mailbox, named by its own id.
+            mailbox: platform == .mac ? myID : nil)
     }
 
     /// Our QR code, with a fresh one-time secret (valid 10 minutes).

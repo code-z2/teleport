@@ -135,7 +135,8 @@ public enum TeleportCrypto {
 
     public static func pairPlaintext(cardJSON: String, proof: Data) throws -> Data {
         let enc = JSONEncoder()
-        enc.outputFormatting = [.withoutEscapingSlashes]
+        // Sorted keys: deterministic bytes, matching the other implementations ({"card","proof"}).
+        enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return try enc.encode(PairBody(card: cardJSON, proof: proof.base64URL))
     }
 

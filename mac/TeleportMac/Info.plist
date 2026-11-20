@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged with Xcode's generated Info.plist. Read by TeleportConfig.fromBundle. -->
+	<key>TeleportRelayURL</key>
+	<string>$(TELEPORT_RELAY_URL)</string>
+	<key>TeleportRelayKey</key>
+	<string>$(TELEPORT_RELAY_KEY)</string>
+	<key>TeleportAppGroup</key>
+	<string>$(TELEPORT_BUNDLE_ID).mac.store</string>
+</dict>
+</plist>

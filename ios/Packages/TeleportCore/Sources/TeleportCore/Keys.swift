@@ -82,6 +82,12 @@ struct KeychainStore {
 
     struct Failure: Error { let status: OSStatus }
 
+    #if os(macOS)
+    /// Prefer the modern (iOS-style) keychain on macOS; it needs a signed app with an
+    /// application identifier, so fall back to the login keychain if that's missing.
+    nonisolated(unsafe) static var useDataProtection = true
+    #endif
+
     private func baseQuery(_ account: String) -> [String: Any] {
         var q: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -89,6 +95,9 @@ struct KeychainStore {
             kSecAttrAccount as String: account,
         ]
         if let accessGroup { q[kSecAttrAccessGroup as String] = accessGroup }
+        #if os(macOS)
+        if Self.useDataProtection { q[kSecUseDataProtectionKeychain as String] = true }
+        #endif
         return q
     }
 
@@ -98,6 +107,12 @@ struct KeychainStore {
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: CFTypeRef?
         let status = SecItemCopyMatching(q as CFDictionary, &out)
+        #if os(macOS)
+        if status == errSecMissingEntitlement, Self.useDataProtection {
+            Self.useDataProtection = false
+            return try loadOrCreate(account, create: create)
+        }
+        #endif
         if status == errSecSuccess, let data = out as? Data { return data }
         guard status == errSecItemNotFound else { throw Failure(status: status) }
 

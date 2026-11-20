@@ -1,0 +1,3 @@
+// The Mac app shares the iOS settings (team, bundle id, relay URL and key).
+// `#include?` keeps fresh clones building before ios/Config/Teleport.xcconfig exists.
+#include? "../../ios/Config/Teleport.xcconfig"

@@ -110,7 +110,13 @@ class MainActivity : ComponentActivity() {
             say(
                 runCatching { teleport.scan(code, name) }.fold(
                     { "Tap Allow on ${it.name} to finish pairing" },
-                    { if (it is InvalidCodeException) "That isn't a Teleport pairing code" else "Pairing failed: ${it.message}" },
+                    {
+                        when (it) {
+                            is InvalidCodeException -> "That isn't a Teleport pairing code"
+                            is app.teleport.core.OfflineException -> "That Mac is offline. Check it's awake, then scan again"
+                            else -> "Pairing failed: ${it.message}"
+                        }
+                    },
                 ),
             )
             reload()
@@ -491,7 +497,10 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             say(
                 withContext(Dispatchers.IO) {
-                    runCatching { teleport.send(clip, peer) }.fold({ "Sent to ${peer.name}" }, { "Failed: ${it.message}" })
+                    runCatching { teleport.send(clip, peer) }.fold(
+                        { "Sent to ${peer.name}" },
+                        { if (it is app.teleport.core.OfflineException) "${peer.name} is offline" else "Failed: ${it.message}" },
+                    )
                 },
             )
         }

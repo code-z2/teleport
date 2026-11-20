@@ -56,6 +56,8 @@ class ShareActivity : Activity() {
                 app.teleport.send(clip, peer)
                 PeerShortcut.publish(app, peer)
                 "Sent to ${peer.name} ✓"
+            } catch (e: app.teleport.core.OfflineException) {
+                "${peer.name} is offline"
             } catch (e: PeerGoneException) {
                 "${peer.name}'s push address expired — open Teleport there or re-pair"
             } catch (e: Exception) {

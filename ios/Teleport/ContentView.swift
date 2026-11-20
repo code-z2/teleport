@@ -137,6 +137,8 @@ struct ContentView: View {
             do {
                 let peer = try await teleport.scan(code, name: name)
                 status = "Tap Allow on \(peer.name) to finish pairing."
+            } catch RelayError.offline {
+                status = "That Mac is offline. Check it's awake and connected, then scan again."
             } catch TeleportError.invalidCode {
                 status = "That isn't a Teleport pairing code (or it's an old one — update the other app)."
             } catch {
@@ -168,6 +170,8 @@ struct ContentView: View {
                 status = "Sent to \(peer.name)"
             } catch RelayError.peerGone {
                 status = "\(peer.name)'s push address expired. Open Teleport there, or re-pair."
+            } catch RelayError.offline {
+                status = "\(peer.name) is offline (asleep or no internet)."
             } catch {
                 status = "Failed: \(error)"
             }

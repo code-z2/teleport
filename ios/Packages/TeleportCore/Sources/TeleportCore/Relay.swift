@@ -30,6 +30,7 @@ public struct TeleportConfig: Sendable {
 public enum RelayError: Error, Sendable {
     case http(Int, String?)
     case peerGone  // 410: peer's push token is dead
+    case offline   // 503: the Mac isn't connected to its mailbox
 }
 
 public struct RelayClient: Sendable {
@@ -40,7 +41,8 @@ public struct RelayClient: Sendable {
         self.config = config; self.session = session
     }
 
-    private func request(_ path: String, method: String) -> URLRequest {
+    /// An authorized request to the relay (also used by the Mac's mailbox connection).
+    public func request(_ path: String, method: String) -> URLRequest {
         var r = URLRequest(url: config.relayURL.appending(path: path))
         r.httpMethod = method
         r.setValue("Bearer \(config.relayKey)", forHTTPHeaderField: "Authorization")
@@ -51,20 +53,27 @@ public struct RelayClient: Sendable {
     private func check(_ response: URLResponse, _ data: Data) throws {
         guard let http = response as? HTTPURLResponse else { throw RelayError.http(0, nil) }
         if http.statusCode == 410 { throw RelayError.peerGone }
+        if http.statusCode == 503 { throw RelayError.offline }
         guard (200..<300).contains(http.statusCode) else {
             throw RelayError.http(http.statusCode, String(data: data, encoding: .utf8))
         }
     }
 
     public func send(_ env: Envelope, to peer: Peer) async throws {
-        struct To: Encodable { let platform: Platform; let fcm: String; let la: String? }
-        // Macs are reached through their relay mailbox (phase 2); phones by push.
-        guard let fcm = peer.fcm, !fcm.isEmpty else { throw RelayError.http(0, "\(peer.name) has no push address yet") }
+        struct To: Encodable { let platform: Platform; let fcm: String?; let la: String?; let mailbox: String? }
         struct Body: Encodable { let to: To; let env: Envelope }
+        // Macs are reached through their relay mailbox (a live connection); phones by push.
+        let to: To
+        if peer.platform == .mac {
+            guard let mailbox = peer.mailbox else { throw RelayError.http(0, "\(peer.name) has no mailbox") }
+            to = To(platform: .mac, fcm: nil, la: nil, mailbox: mailbox)
+        } else {
+            guard let fcm = peer.fcm, !fcm.isEmpty else { throw RelayError.http(0, "\(peer.name) has no push address yet") }
+            to = To(platform: peer.platform, fcm: fcm, la: peer.platform == .ios ? peer.la : nil, mailbox: nil)
+        }
         var r = request("v1/send", method: "POST")
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        r.httpBody = try JSONEncoder().encode(
-            Body(to: To(platform: peer.platform, fcm: fcm, la: peer.platform == .ios ? peer.la : nil), env: env))
+        r.httpBody = try JSONEncoder().encode(Body(to: to, env: env))
         let (data, response) = try await session.data(for: r)
         try check(response, data)
     }

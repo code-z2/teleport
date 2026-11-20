@@ -40,6 +40,7 @@ enum ClipExtractor {
         case TeleportError.chooseDevice: "Several devices are paired — pick one from the share sheet's suggestions or the Teleport app icon"
         case TeleportError.tooLarge: "Too large (max 10 MB)"
         case RelayError.peerGone: "The other phone needs to re-pair"
+        case RelayError.offline: "That Mac is offline (asleep or no internet)"
         default: "Send failed"
         }
     }
