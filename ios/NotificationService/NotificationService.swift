@@ -30,8 +30,8 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         var title: String
         var body: String
         var attachment: URL?
-        var actionable = true
-        var isImage = false
+        /// nil keeps the category the relay set ("CLIP"); "" removes the actions.
+        var category: String?
     }
 
     private func deliver(_ rendered: Rendered?) {
@@ -44,8 +44,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         if let rendered {
             content.title = rendered.title
             content.body = rendered.body
-            if !rendered.actionable { content.categoryIdentifier = "" }
-            if rendered.isImage { content.categoryIdentifier = "CLIP_IMAGE" }
+            if let category = rendered.category { content.categoryIdentifier = category }
             if let url = rendered.attachment, let a = try? UNNotificationAttachment(identifier: "clip", url: url) {
                 content.attachments = [a]
             }
@@ -56,19 +55,29 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     private static func render(_ env: String) async -> Rendered {
         do {
             let teleport = try Teleport()
-            let from = teleport.store.peer?.name ?? "your phone"
             switch try await teleport.receive(env, firstDelivery: true) {
-            case .clip(.text(let text), _):
-                return Rendered(title: "Clip from \(from)", body: String(text.prefix(300)))
-            case .clip(.image(let data, let mime), let id):
+            case .clip(.text(let text), _, let from):
+                return Rendered(title: "Clip from \(from.name)", body: String(text.prefix(300)))
+            case .clip(.image(let data, let mime), let id, let from):
                 return Rendered(
-                    title: "Image from \(from)", body: "Press and hold to Copy or Save to Photos",
-                    attachment: writeAttachment(data, mime: mime, id: id), isImage: true)
+                    title: "Image from \(from.name)", body: "Press and hold to Copy or Save to Photos",
+                    attachment: writeAttachment(data, mime: mime, id: id), category: "CLIP_IMAGE")
+            case .pairRequest(let request):
+                return Rendered(
+                    title: "\(request.name) wants to pair",
+                    body: "Allow it to send to and receive from this iPhone. Expires in 10 minutes.",
+                    category: "PAIR")
+            case .paired(let peer):
+                return Rendered(title: "Paired with \(peer.name)", body: "You can now teleport between the two.", category: "")
             case .peerUpdated(let peer):
-                return Rendered(title: "Teleport", body: "\(peer.name) reconnected", actionable: false)
+                return Rendered(title: "Teleport", body: "\(peer.name) updated", category: "")
             }
+        } catch OpenError.proof {
+            return Rendered(
+                title: "Teleport", body: "Pairing code expired or already used. Show a new code and scan again.",
+                category: "")
         } catch let error as OpenError {
-            return Rendered(title: "Teleport", body: "Couldn't verify a clip (\(error.rawValue)). Re-pair if this keeps happening.", actionable: false)
+            return Rendered(title: "Teleport", body: "Couldn't verify a clip (\(error.rawValue)). Re-pair if this keeps happening.", category: "")
         } catch {
             // Usually a network failure downloading an image; Copy re-downloads it.
             return Rendered(title: "Teleport", body: "Couldn't download a clip: \(error.localizedDescription). Tap Copy to try again.")

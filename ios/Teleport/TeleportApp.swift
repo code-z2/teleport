@@ -23,6 +23,8 @@ extension Notification.Name {
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate, MessagingDelegate {
     nonisolated static let copyAction = "COPY"
     nonisolated static let saveAction = "SAVE"
+    nonisolated static let allowAction = "ALLOW"
+    nonisolated static let denyAction = "DENY"
 
     func application(
         _ application: UIApplication,
@@ -47,6 +49,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             UNNotificationCategory(identifier: "CLIP", actions: [copy], intentIdentifiers: []),
             // The NSE switches image notifications to this category.
             UNNotificationCategory(identifier: "CLIP_IMAGE", actions: [copy, save], intentIdentifiers: []),
+            // The NSE uses this for "<name> wants to pair".
+            UNNotificationCategory(identifier: "PAIR", actions: [
+                UNNotificationAction(identifier: Self.allowAction, title: "Allow", options: [.foreground]),
+                UNNotificationAction(identifier: Self.denyAction, title: "Deny", options: [.destructive]),
+            ], intentIdentifiers: []),
         ])
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
         application.registerForRemoteNotifications()
@@ -79,8 +86,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let after = (teleport.store.ownFCMToken, teleport.store.ownLiveActivityToken)
         guard before != after else { return }
         NotificationCenter.default.post(name: .teleportPushStateChanged, object: nil)
-        guard teleport.store.peer != nil else { return }
-        Task { try? await teleport.announceTokens(name: UIDevice.current.name) }
+        guard !teleport.store.peers.isEmpty, let name = teleport.store.deviceName else { return }
+        Task { await teleport.announce(name: name) }
     }
 
     /// Set when APNs refuses to register (missing push entitlement, no network, simulator…).
@@ -115,7 +122,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter, willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        [.banner, .sound]
+        // Pairing requests, "Paired" and device updates change what the main screen shows.
+        await MainActor.run { NotificationCenter.default.post(name: .teleportPushStateChanged, object: nil) }
+        return [.banner, .sound]
     }
 
     /// Tapping the notification or its "Copy" action opens the app → copy.
@@ -123,6 +132,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse
     ) async {
         guard let env = response.notification.request.content.userInfo["env"] as? String else { return }
+        if response.notification.request.content.categoryIdentifier == "PAIR" {
+            return await Self.answerPairing(env, allow: response.actionIdentifier != Self.denyAction)
+        }
         switch response.actionIdentifier {
         case Self.saveAction: await Self.save(env)
         case Self.copyAction, UNNotificationDefaultActionIdentifier: await Self.copy(env)
@@ -130,10 +142,22 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    /// Allow (or tapping the notification) pairs; Deny drops the request.
+    /// The request id is the sender's fingerprint, which is the envelope's `from`.
+    static func answerPairing(_ env: String, allow: Bool) async {
+        guard let teleport = try? Teleport(), let from = try? Envelope.parse(env).from else { return }
+        if allow, let name = teleport.store.deviceName {
+            do { try await teleport.allow(from, name: name) } catch { print("Teleport: allow failed: \(error)") }
+        } else if !allow {
+            teleport.deny(from)
+        }
+        NotificationCenter.default.post(name: .teleportPushStateChanged, object: nil)
+    }
+
     static func save(_ env: String) async {
         do {
             let teleport = try Teleport()
-            if case .clip(.image(let data, _), _) = try await teleport.receive(env, firstDelivery: false) {
+            if case .clip(.image(let data, _), _, _) = try await teleport.receive(env, firstDelivery: false) {
                 try await PhotoSaver.save(data)
             }
         } catch {
@@ -144,7 +168,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     static func copy(_ env: String) async {
         do {
             let teleport = try Teleport()
-            if case .clip(let clip, _) = try await teleport.receive(env, firstDelivery: false) {
+            if case .clip(let clip, _, _) = try await teleport.receive(env, firstDelivery: false) {
                 ClipboardWriter.write(clip)
             }
         } catch {

@@ -5,7 +5,7 @@ export interface Envelope {
   v: 1;
   id: string;
   ts: number;
-  k: "text" | "blob" | "peer";
+  k: "text" | "blob" | "peer" | "pair" | "pair-ok";
   from: string;
   epk: string;
   n: string;
@@ -14,6 +14,7 @@ export interface Envelope {
 }
 
 export const MAX_ENVELOPE_BYTES = 3000;
+export const KINDS: readonly Envelope["k"][] = ["text", "blob", "peer", "pair", "pair-ok"];
 
 const b64u = (len?: number) => (s: unknown) =>
   typeof s === "string" && /^[A-Za-z0-9_-]*$/.test(s) && (len === undefined || s.length === len);
@@ -23,7 +24,7 @@ const checks: Record<keyof Envelope, (x: unknown) => boolean> = {
   v: (x) => x === 1,
   id: b64u(22),
   ts: (x) => Number.isInteger(x) && (x as number) > 0,
-  k: (x) => x === "text" || x === "blob" || x === "peer",
+  k: (x) => typeof x === "string" && KINDS.includes(x as Envelope["k"]),
   from: b64u(11),
   epk: b64u(87),
   n: b64u(16),

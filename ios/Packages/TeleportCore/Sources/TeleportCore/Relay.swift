@@ -58,11 +58,13 @@ public struct RelayClient: Sendable {
 
     public func send(_ env: Envelope, to peer: Peer) async throws {
         struct To: Encodable { let platform: Platform; let fcm: String; let la: String? }
+        // Macs are reached through their relay mailbox (phase 2); phones by push.
+        guard let fcm = peer.fcm, !fcm.isEmpty else { throw RelayError.http(0, "\(peer.name) has no push address yet") }
         struct Body: Encodable { let to: To; let env: Envelope }
         var r = request("v1/send", method: "POST")
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
         r.httpBody = try JSONEncoder().encode(
-            Body(to: To(platform: peer.platform, fcm: peer.fcm, la: peer.platform == .ios ? peer.la : nil), env: env))
+            Body(to: To(platform: peer.platform, fcm: fcm, la: peer.platform == .ios ? peer.la : nil), env: env))
         let (data, response) = try await session.data(for: r)
         try check(response, data)
     }

@@ -17,6 +17,15 @@ export interface Recipient {
 
 const TTL_SECONDS = 300;
 
+// Generic text only; the Notification Service Extension replaces it after decrypting.
+const ALERT_BODY: Record<Envelope["k"], string> = {
+  text: "New clip",
+  blob: "New clip",
+  peer: "Device updated",
+  pair: "Pairing request",
+  "pair-ok": "Paired",
+};
+
 // ---------- messages ----------
 
 export function buildMessages(to: Recipient, env: Envelope, now: number): object[] {
@@ -46,7 +55,7 @@ export function buildMessages(to: Recipient, env: Envelope, now: number): object
         payload: {
           aps: {
             // Generic text; the Notification Service Extension replaces it after decrypting.
-            alert: { title: "Teleport", body: env.k === "peer" ? "Peer updated" : "New clip" },
+            alert: { title: "Teleport", body: ALERT_BODY[env.k] },
             "mutable-content": 1,
             sound: "default",
             category: "CLIP",
@@ -58,7 +67,8 @@ export function buildMessages(to: Recipient, env: Envelope, now: number): object
     },
   ];
 
-  if (to.la && env.k !== "peer") {
+  // Live Activities are only for clips, never for pairing or device updates.
+  if (to.la && (env.k === "text" || env.k === "blob")) {
     // Live Activity push-to-start (iOS 17.2+). Field names per Firebase's Live Activity guide.
     messages.push({
       token: to.fcm,

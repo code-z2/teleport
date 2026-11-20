@@ -68,5 +68,9 @@
         <receiver
             android:name=".SaveImageReceiver"
             android:exported="false" />
+        <!-- Allow / Deny on pairing requests. -->
+        <receiver
+            android:name=".PairActionReceiver"
+            android:exported="false" />
     </application>
 </manifest>

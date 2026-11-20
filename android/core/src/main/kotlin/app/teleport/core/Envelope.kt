@@ -22,7 +22,7 @@ data class Envelope(
 
     companion object {
         const val MAX_BYTES = 3000
-        val KINDS = setOf(KIND_TEXT, KIND_BLOB, KIND_PEER)
+        val KINDS = setOf(KIND_TEXT, KIND_BLOB, KIND_PEER, KIND_PAIR, KIND_PAIR_OK)
         fun parse(json: String): Envelope = TeleportJson.decodeFromString(serializer(), json)
     }
 }
@@ -30,8 +30,13 @@ data class Envelope(
 const val KIND_TEXT = "text"
 const val KIND_BLOB = "blob"
 const val KIND_PEER = "peer"
+const val KIND_PAIR = "pair"
+const val KIND_PAIR_OK = "pair-ok"
 
 val TeleportJson = Json { ignoreUnknownKeys = false; explicitNulls = false; encodeDefaults = true }
+
+/** For cards from other devices: newer versions may add fields. */
+val lenientJson = Json { ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = true }
 
 class OpenException(val code: String) : Exception(code)
 
@@ -39,9 +44,13 @@ class OpenException(val code: String) : Exception(code)
 @Serializable
 data class BlobPointer(val id: String, val mime: String, val size: Long, val key: String, val n: String)
 
-/** Plaintext of a `peer` envelope. */
+/** Plaintext of a `peer` envelope: renamed or new push address. Missing fields keep their old values. */
 @Serializable
-data class PeerUpdate(val fcm: String, val la: String? = null, val name: String? = null)
+data class PeerUpdate(val name: String? = null, val fcm: String? = null, val la: String? = null, val mailbox: String? = null)
+
+/** Plaintext of a `pair` envelope. The card is a string so the proof covers exact bytes. */
+@Serializable
+data class PairBody(val card: String, val proof: String)
 
 object TeleportCrypto {
     private val INFO = "teleport/v1/aes-256-gcm".toByteArray()
@@ -91,6 +100,51 @@ object TeleportCrypto {
         } catch (e: java.security.GeneralSecurityException) {
             throw OpenException("decrypt")
         }
+    }
+
+    // ---------- pairing v2 (SPEC.md "v2 additions") ----------
+
+    fun pairProof(secret: ByteArray, cardJson: String): ByteArray =
+        javax.crypto.Mac.getInstance("HmacSHA256").run {
+            init(javax.crypto.spec.SecretKeySpec(secret, "HmacSHA256"))
+            doFinal(cardJson.toByteArray(Charsets.UTF_8))
+        }
+
+    fun pairPlaintext(cardJson: String, proof: ByteArray): ByteArray =
+        TeleportJson.encodeToString(PairBody.serializer(), PairBody(cardJson, proof.b64u())).toByteArray(Charsets.UTF_8)
+
+    class OpenedPair(val card: PairingCard, val json: String)
+
+    /**
+     * Opens a `pair` envelope from a device that isn't paired yet: decrypt, then check the
+     * signature against the key in the card it carries, then the proof against our QR secret.
+     */
+    fun openPair(env: Envelope, ownKa: AgreementKey, secret: ByteArray, now: Long = System.currentTimeMillis() / 1000): OpenedPair {
+        if (env.v != 1) throw OpenException("version")
+        if (env.k != KIND_PAIR) throw OpenException("kind")
+        val (epk, n, ct, sig) = try {
+            listOf(env.epk.unb64u(), env.n.unb64u(), env.ct.unb64u(), env.sig.unb64u())
+        } catch (e: IllegalArgumentException) {
+            throw OpenException("encoding")
+        }
+        val pt = try {
+            Primitives.aesGcm(false, deriveKey(ownKa.sharedSecret(epk), epk, ownKa.publicKey), n, ct, env.header)
+        } catch (e: java.security.GeneralSecurityException) {
+            throw OpenException("decrypt")
+        }
+        val (body, card) = try {
+            val body = TeleportJson.decodeFromString(PairBody.serializer(), String(pt, Charsets.UTF_8))
+            body to lenientJson.decodeFromString(PairingCard.serializer(), body.card)
+        } catch (e: Exception) {
+            throw OpenException("encoding")
+        }
+        val ks = try { card.ks.unb64u().also { require(it.size == 65) } } catch (e: Exception) { throw OpenException("encoding") }
+        if (env.from != fingerprint(ks)) throw OpenException("peer")
+        if (!Primitives.verify(ks, env.header + epk + n + ct, sig)) throw OpenException("signature")
+        if (env.ts < now - 86_400 || env.ts > now + 300) throw OpenException("stale")
+        val proof = try { body.proof.unb64u() } catch (e: Exception) { throw OpenException("encoding") }
+        if (!java.security.MessageDigest.isEqual(pairProof(secret, body.card), proof)) throw OpenException("proof")
+        return OpenedPair(card, body.card)
     }
 
     class SealedBlob(val ciphertext: ByteArray, val key: ByteArray, val nonce: ByteArray)

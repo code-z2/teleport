@@ -3,7 +3,10 @@ import Foundation
 
 /// Teleport wire protocol v1. See protocol/SPEC.md.
 public struct Envelope: Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable { case text, blob, peer }
+    public enum Kind: String, Codable, Sendable {
+        case text, blob, peer, pair
+        case pairOK = "pair-ok"
+    }
 
     public var v: Int
     public var id: String
@@ -31,7 +34,7 @@ public struct Envelope: Codable, Equatable, Sendable {
 }
 
 public enum OpenError: String, Error, Sendable {
-    case version, kind, peer, signature, stale, replay, decrypt, encoding
+    case version, kind, peer, signature, stale, replay, decrypt, encoding, proof
 }
 
 public enum TeleportCrypto {
@@ -121,6 +124,59 @@ public enum TeleportCrypto {
         }
     }
 
+    // MARK: Pairing v2 (SPEC.md "v2 additions")
+
+    public static func pairProof(secret: Data, cardJSON: String) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(for: Data(cardJSON.utf8), using: SymmetricKey(data: secret)))
+    }
+
+    /// Plaintext of a `pair` envelope. The card is a string so the proof covers exact bytes.
+    struct PairBody: Codable { let card: String; let proof: String }
+
+    public static func pairPlaintext(cardJSON: String, proof: Data) throws -> Data {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.withoutEscapingSlashes]
+        return try enc.encode(PairBody(card: cardJSON, proof: proof.base64URL))
+    }
+
+    /// Opens a `pair` envelope from a device that isn't paired yet: decrypt, then check the
+    /// signature against the key in the card it carries, then the proof against our QR secret.
+    public static func openPair(
+        _ env: Envelope, ownKa: some AgreementKey, secret: Data, now: Int = Int(Date().timeIntervalSince1970)
+    ) throws -> (card: PairingCard, json: String) {
+        guard env.v == 1 else { throw OpenError.version }
+        guard env.k == .pair else { throw OpenError.kind }
+        guard let epk = Data(base64URL: env.epk), let n = Data(base64URL: env.n),
+              let ct = Data(base64URL: env.ct), let sig = Data(base64URL: env.sig), ct.count >= 16
+        else { throw OpenError.encoding }
+
+        let plaintext: Data
+        do {
+            let key = deriveKey(sharedSecret: try ownKa.sharedSecret(with: epk), epk: epk, recipientKa: ownKa.publicKey)
+            let box = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: n), ciphertext: ct.dropLast(16), tag: ct.suffix(16))
+            plaintext = try AES.GCM.open(box, using: key, authenticating: env.header)
+        } catch {
+            throw OpenError.decrypt
+        }
+
+        guard let body = try? JSONDecoder().decode(PairBody.self, from: plaintext),
+              let card = try? JSONDecoder().decode(PairingCard.self, from: Data(body.card.utf8)),
+              let ks = Data(base64URL: card.ks), ks.count == 65,
+              let proof = Data(base64URL: body.proof)
+        else { throw OpenError.encoding }
+
+        guard env.from == fingerprint(ks) else { throw OpenError.peer }
+        let verifier = try P256.Signing.PublicKey(x963Representation: ks)
+        guard let signature = try? P256.Signing.ECDSASignature(rawRepresentation: sig),
+              verifier.isValidSignature(signature, for: env.header + epk + n + ct)
+        else { throw OpenError.signature }
+        guard env.ts >= now - 86_400, env.ts <= now + 300 else { throw OpenError.stale }
+        // Constant-time comparison via CryptoKit's MAC check.
+        guard HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: Data(body.card.utf8), using: SymmetricKey(data: secret))
+        else { throw OpenError.proof }
+        return (card, body.card)
+    }
+
     // MARK: Blobs
 
     public struct SealedBlob: Sendable {
@@ -160,13 +216,15 @@ public struct BlobPointer: Codable, Equatable, Sendable {
     }
 }
 
-/// Plaintext of a `peer` envelope: the sender's push tokens rotated.
+/// Plaintext of a `peer` envelope: the sender was renamed or its push tokens rotated.
+/// Missing fields keep their previous values.
 public struct PeerUpdate: Codable, Equatable, Sendable {
-    public var fcm: String
-    public var la: String?
     public var name: String?
+    public var fcm: String?
+    public var la: String?
+    public var mailbox: String?
 
-    public init(fcm: String, la: String?, name: String?) {
-        self.fcm = fcm; self.la = la; self.name = name
+    public init(name: String?, fcm: String?, la: String?, mailbox: String? = nil) {
+        self.name = name; self.fcm = fcm; self.la = la; self.mailbox = mailbox
     }
 }

@@ -26,8 +26,7 @@ object ClipDelivery {
     const val EXTRA_MIME = "mime"
     const val NOTIFICATION_ID = 1
 
-    fun deliver(context: Context, clip: Clip, id: String) {
-        val from = TeleportApp.of(context).teleport.store.peer?.name ?: "your phone"
+    fun deliver(context: Context, clip: Clip, id: String, from: String) {
         when (clip) {
             is Clip.Text -> {
                 setClipboard(context, ClipData.newPlainText("Teleport", clip.text))
@@ -54,9 +53,8 @@ object ClipDelivery {
     }
 
     /** The download was blocked (usually background data off on mobile data): finish it when the app opens. */
-    fun notifyPending(context: Context, pointer: BlobPointer, id: String) {
-        PendingBlobs.add(context, id, pointer)
-        val from = TeleportApp.of(context).teleport.store.peer?.name ?: "your phone"
+    fun notifyPending(context: Context, pointer: BlobPointer, id: String, from: String) {
+        PendingBlobs.add(context, id, PendingBlob(pointer, from))
         notify(
             context,
             base(context, "Image from $from — tap to download", "Teleport couldn't download it in the background. Allow background data for Teleport to skip this step."),
@@ -64,6 +62,8 @@ object ClipDelivery {
     }
 
     fun notifyError(context: Context, message: String) = notify(context, base(context, "Teleport", message))
+
+    fun cancel(context: Context) = NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
 
     fun base(context: Context, title: String, body: String): Notification.Builder {
         val open = PendingIntent.getActivity(
@@ -108,17 +108,20 @@ object ClipDelivery {
     }
 }
 
+@kotlinx.serialization.Serializable
+data class PendingBlob(val pointer: BlobPointer, val from: String)
+
 /** Blobs whose download failed, finished next time the app is opened. */
 object PendingBlobs {
     private fun prefs(context: Context) = context.getSharedPreferences("teleport_pending", Context.MODE_PRIVATE)
 
-    fun add(context: Context, id: String, p: BlobPointer) =
-        prefs(context).edit().putString(id, TeleportJson.encodeToString(BlobPointer.serializer(), p)).apply()
+    fun add(context: Context, id: String, p: PendingBlob) =
+        prefs(context).edit().putString(id, TeleportJson.encodeToString(PendingBlob.serializer(), p)).apply()
 
     fun remove(context: Context, id: String) = prefs(context).edit().remove(id).apply()
 
-    fun all(context: Context): Map<String, BlobPointer> =
+    fun all(context: Context): Map<String, PendingBlob> =
         prefs(context).all.mapNotNull { (id, v) ->
-            (v as? String)?.let { id to TeleportJson.decodeFromString(BlobPointer.serializer(), it) }
+            (v as? String)?.let { runCatching { id to TeleportJson.decodeFromString(PendingBlob.serializer(), it) }.getOrNull() }
         }.toMap()
 }

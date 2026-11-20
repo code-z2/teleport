@@ -5,8 +5,8 @@ const subtle = globalThis.crypto.subtle;
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-export type Kind = "text" | "blob" | "peer";
-export const KINDS: readonly Kind[] = ["text", "blob", "peer"];
+export type Kind = "text" | "blob" | "peer" | "pair" | "pair-ok";
+export const KINDS: readonly Kind[] = ["text", "blob", "peer", "pair", "pair-ok"];
 export const MAX_ENVELOPE_BYTES = 3000;
 
 export interface Envelope {
@@ -159,7 +159,7 @@ export async function seal(
   return { v: 1, id, ts, k: kind, from, epk: b64u(eph.pub), n: b64u(n), ct: b64u(ct), sig: b64u(sig) };
 }
 
-export type OpenErrorCode = "version" | "kind" | "peer" | "signature" | "stale" | "decrypt";
+export type OpenErrorCode = "version" | "kind" | "peer" | "signature" | "stale" | "decrypt" | "encoding" | "proof";
 
 export class OpenError extends Error {
   readonly code: OpenErrorCode;
@@ -199,4 +199,66 @@ export async function open(
 }
 
 export const BLOB_AAD = enc.encode("teleport/v1/blob");
+
+// ---------- pairing v2 (SPEC.md "v2 additions") ----------
+
+export async function pairProof(ps: Uint8Array, cardJson: string): Promise<Uint8Array> {
+  const key = await subtle.importKey("raw", ps, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await subtle.sign("HMAC", key, enc.encode(cardJson)));
+}
+
+export function pairPlaintext(cardJson: string, proof: Uint8Array): Uint8Array {
+  return enc.encode(JSON.stringify({ card: cardJson, proof: b64u(proof) }));
+}
+
+export interface OpenedPair {
+  card: Record<string, unknown> & { ks: string; name: string };
+  cardJson: string;
+  proof: Uint8Array;
+}
+
+/** Opens a `pair` envelope from a not-yet-known device. Checks the proof against `ps`. */
+export async function openPair(
+  env: Envelope,
+  ownKa: RawKeyPair,
+  ps: Uint8Array,
+  now = Math.floor(Date.now() / 1000),
+): Promise<OpenedPair> {
+  if (env.v !== 1) throw new OpenError("version");
+  if (env.k !== "pair") throw new OpenError("kind");
+  const h = header(env.id, env.ts, env.k, env.from);
+  const epk = unb64u(env.epk);
+  const n = unb64u(env.n);
+  const ct = unb64u(env.ct);
+  const key = await deriveKey(null, epk, ownKa, ownKa.pub);
+  let pt: Uint8Array;
+  try {
+    pt = await aesGcm("decrypt", key, n, ct, h);
+  } catch {
+    throw new OpenError("decrypt");
+  }
+  let cardJson: string, card: OpenedPair["card"], proof: Uint8Array;
+  try {
+    const body = JSON.parse(dec.decode(pt));
+    cardJson = body.card;
+    card = JSON.parse(cardJson);
+    proof = unb64u(body.proof);
+    if (unb64u(card.ks).length !== 65) throw new Error();
+  } catch {
+    throw new OpenError("encoding");
+  }
+  const ks = unb64u(card.ks);
+  if (env.from !== (await fingerprint(ks))) throw new OpenError("peer");
+  const ok = await subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    await importVerifyPub(ks),
+    unb64u(env.sig),
+    concat(h, epk, n, ct),
+  );
+  if (!ok) throw new OpenError("signature");
+  if (env.ts < now - 86400 || env.ts > now + 300) throw new OpenError("stale");
+  const expected = await pairProof(ps, cardJson);
+  if (expected.length !== proof.length || !expected.every((b, i) => b === proof[i])) throw new OpenError("proof");
+  return { card, cardJson, proof };
+}
 export { enc, dec };

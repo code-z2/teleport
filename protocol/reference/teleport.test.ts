@@ -11,6 +11,9 @@ import {
   deriveKey,
   fingerprint,
   open,
+  openPair,
+  pairPlaintext,
+  pairProof,
   seal,
   unb64u,
   type Envelope,
@@ -68,3 +71,48 @@ test("pairing card encodes", () => {
   const json = Buffer.from(V.pairing_card.encoded.slice("teleport1:".length), "base64url").toString();
   assert.deepEqual(JSON.parse(json), V.pairing_card.card);
 });
+
+// ---------- pairing v2 ----------
+const P = V.pairing;
+const aKs = raw(P.a_ks);
+const bKa = raw(P.b_ka);
+
+test("pair proof", async () => {
+  assert.equal(b64u(await pairProof(unb64u(P.ps), P.b_card)), P.proof);
+});
+
+test("pair: open with the QR secret", async () => {
+  const opened = await openPair(P.pair.env, recipientKa, unb64u(P.ps), V.now);
+  assert.equal(opened.cardJson, P.b_card);
+  assert.equal(opened.card.name, "Pixel 8");
+});
+
+test("pair: seal is deterministic given inputs", async () => {
+  const eph = raw(P.pair.eph);
+  const env = await seal("pair", pairPlaintext(P.b_card, unb64u(P.proof)), senderKs, recipientKa.pub, {
+    id: unb64u(P.pair.env.id), ts: P.pair.env.ts, eph, nonce: unb64u(P.pair.env.n),
+  });
+  assert.equal(b64u(pairPlaintext(P.b_card, unb64u(P.proof))), P.pair.plaintext);
+  assert.deepEqual({ ...env, sig: "" }, { ...P.pair.env, sig: "" });
+});
+
+test("pair-ok: opens with A's ks from the QR", async () => {
+  const pt = await open(P.pair_ok.env, bKa, aKs.pub, V.now);
+  assert.equal(b64u(pt), P.pair_ok.plaintext);
+});
+
+test("qr card v2 carries the secret", () => {
+  const card = JSON.parse(Buffer.from(P.qr.slice("teleport2:".length), "base64url").toString());
+  assert.equal(card.v, 2);
+  assert.equal(card.ps, P.ps);
+});
+
+for (const c of P.invalid) {
+  test(`pair reject: ${c.name}`, async () => {
+    await assert.rejects(openPair(c.env, recipientKa, unb64u(c.ps), V.now), (e: unknown) => {
+      assert.ok(e instanceof OpenError);
+      assert.equal(e.code, c.error);
+      return true;
+    });
+  });
+}

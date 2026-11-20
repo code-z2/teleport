@@ -16,6 +16,19 @@ struct Vectors: Decodable {
     struct Invalid: Decodable { let name: String; let error: String; let env: Envelope }
     struct Blob: Decodable { let key: String; let n: String; let plaintext: String; let ciphertext: String }
     struct Card: Decodable { let encoded: String }
+    struct PairSide: Decodable { let eph: KP; let plaintext: String; let env: Envelope }
+    struct PairInvalid: Decodable { let name: String; let error: String; let ps: String; let env: Envelope }
+    struct Pairing: Decodable {
+        let ps: String
+        let a_ks: KP
+        let b_ka: KP
+        let qr: String
+        let b_card: String
+        let proof: String
+        let pair: PairSide
+        let pair_ok: PairSide
+        let invalid: [PairInvalid]
+    }
 
     let now: Int
     let recipient_ka: KP
@@ -24,6 +37,7 @@ struct Vectors: Decodable {
     let invalid: [Invalid]
     let blob: Blob
     let pairing_card: Card
+    let pairing: Pairing
 
     static let shared: Vectors = {
         let url = URL(filePath: #filePath)
@@ -91,12 +105,59 @@ func rejectsInvalid(name: String) {
     #expect(try TeleportCrypto.openBlob(s.ciphertext, key: s.key, nonce: s.nonce) == data)
 }
 
-@Test func pairingCardDecodes() throws {
-    let card = try PairingCard.decode(V.pairing_card.encoded)
-    #expect(card.platform == .android)
+@Test func v1PairingCardIsRejected() {
+    #expect(throws: (any Error).self) { try PairingCard.decode(V.pairing_card.encoded) }
+}
+
+// MARK: Pairing v2
+
+private let P = V.pairing
+
+@Test func qrCardV2Decodes() throws {
+    let card = try PairingCard.decode(P.qr)
+    #expect(card.v == 2)
+    #expect(card.ps == P.ps)
     #expect(Data(base64URL: card.ka) == b(V.recipient_ka.pub))
-    let round = try PairingCard.decode(try card.encoded())
-    #expect(round == card)
+    #expect(try PairingCard.decode(try card.encoded()) == card)
+}
+
+@Test func pairProofMatches() {
+    #expect(TeleportCrypto.pairProof(secret: b(P.ps), cardJSON: P.b_card) == b(P.proof))
+}
+
+@Test func pairPlaintextMatches() throws {
+    #expect(try TeleportCrypto.pairPlaintext(cardJSON: P.b_card, proof: b(P.proof)) == b(P.pair.plaintext))
+}
+
+@Test func openPairVector() throws {
+    let (card, json) = try TeleportCrypto.openPair(P.pair.env, ownKa: recipient, secret: b(P.ps), now: V.now)
+    #expect(json == P.b_card)
+    #expect(card.name == "Pixel 8")
+    #expect(card.platform == .android)
+}
+
+@Test func sealPairMatchesVector() throws {
+    let env = try TeleportCrypto.seal(
+        kind: .pair, plaintext: b(P.pair.plaintext), signer: sender, recipientKa: recipient.publicKey,
+        id: b(P.pair.env.id), ts: P.pair.env.ts,
+        ephemeral: try .init(rawRepresentation: b(P.pair.eph.d)), nonce: b(P.pair.env.n))
+    var expected = P.pair.env
+    expected.sig = env.sig
+    #expect(env == expected)
+}
+
+@Test func pairOKOpensWithQRKey() throws {
+    let bKa = SoftwareAgreementKey(try .init(rawRepresentation: b(P.b_ka.d)))
+    let pt = try TeleportCrypto.open(P.pair_ok.env, ownKa: bKa, senderKs: b(P.a_ks.pub), now: V.now)
+    #expect(pt == b(P.pair_ok.plaintext))
+}
+
+@Test(arguments: P.invalid.map(\.name))
+func rejectsInvalidPair(name: String) {
+    let c = P.invalid.first { $0.name == name }!
+    #expect(throws: OpenError(rawValue: c.error)!) {
+        try TeleportCrypto.openPair(c.env, ownKa: recipient, secret: b(c.ps), now: V.now)
+    }
 }
 
 @Test func envelopeJSONRoundTrip() throws {

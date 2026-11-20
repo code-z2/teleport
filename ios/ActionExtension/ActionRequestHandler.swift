@@ -9,16 +9,18 @@ final class ActionRequestHandler: NSObject, NSExtensionRequestHandling {
         // The context is only touched from this one task, then completed.
         nonisolated(unsafe) let context = context
         Task { @MainActor in
-            let peerName = (try? Teleport())?.store.peer?.name ?? "your other phone"
             do {
                 guard let clip = try await ClipExtractor.clip(from: context.inputItems) else {
                     await Self.notify("Nothing to teleport")
                     return context.completeRequest(returningItems: nil)
                 }
+                // Phase 4 turns this into "Teleport…" with a device picker. Until then it
+                // sends to the only paired device.
                 let teleport = try Teleport()
-                try await teleport.send(clip)
-                if let peer = teleport.store.peer { ShareSuggestion.donate(for: peer) }
-                await Self.notify("Sent to \(peerName)")
+                let peer = try teleport.defaultPeer()
+                try await teleport.send(clip, to: peer)
+                ShareSuggestion.donate(for: peer)
+                await Self.notify("Sent to \(peer.name)")
             } catch {
                 await Self.notify(ClipExtractor.message(for: error))
             }

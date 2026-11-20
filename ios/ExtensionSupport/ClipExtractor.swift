@@ -37,6 +37,7 @@ enum ClipExtractor {
     static func message(for error: Error) -> String {
         switch error {
         case TeleportError.notPaired: "Open Teleport to pair first"
+        case TeleportError.chooseDevice: "Several devices are paired — pick one from the share sheet's suggestions or the Teleport app icon"
         case TeleportError.tooLarge: "Too large (max 10 MB)"
         case RelayError.peerGone: "The other phone needs to re-pair"
         default: "Send failed"

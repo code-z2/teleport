@@ -28,7 +28,7 @@ struct CopyClipIntent: LiveActivityIntent {
 
     func perform() async throws -> some IntentResult {
         let teleport = try Teleport()
-        if case .clip(let clip, _) = try await teleport.receive(env, firstDelivery: false) {
+        if case .clip(let clip, _, _) = try await teleport.receive(env, firstDelivery: false) {
             await ClipboardWriter.write(clip)
         }
         // Done — dismiss every clip activity.
@@ -54,8 +54,8 @@ struct SaveClipIntent: LiveActivityIntent {
     func perform() async throws -> some IntentResult {
         let teleport = try Teleport()
         switch try await teleport.receive(env, firstDelivery: false) {
-        case .clip(.image(let data, _), _): try await PhotoSaver.save(data)
-        case .clip(let clip, _): await ClipboardWriter.write(clip)  // a long text "blob": copy instead
+        case .clip(.image(let data, _), _, _): try await PhotoSaver.save(data)
+        case .clip(let clip, _, _): await ClipboardWriter.write(clip)  // a long text "blob": copy instead
         default: break
         }
         for activity in Activity<ClipActivityAttributes>.activities {

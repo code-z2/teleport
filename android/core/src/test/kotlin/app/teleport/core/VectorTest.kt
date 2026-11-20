@@ -73,10 +73,57 @@ class VectorTest {
         )
     }
 
-    @Test fun pairingCard() {
-        val card = PairingCard.decode(v["pairing_card"]!!.jsonObject.s("encoded"))
-        assertEquals("android", card.platform)
+    @Test fun v1PairingCardIsRejected() {
+        assertFailsWith<OpenException> { PairingCard.decode(v["pairing_card"]!!.jsonObject.s("encoded")) }
+    }
+
+    // ---------- pairing v2 ----------
+
+    private val p = v["pairing"]!!.jsonObject
+    private fun side(name: String) = p[name]!!.jsonObject
+
+    @Test fun qrCardV2Decodes() {
+        val card = PairingCard.decode(p.s("qr"))
+        assertEquals(2, card.v)
+        assertEquals(p.s("ps"), card.ps)
         assertEquals(card, PairingCard.decode(card.encoded()))
+    }
+
+    @Test fun pairProofAndPlaintextMatch() {
+        val proof = TeleportCrypto.pairProof(p.s("ps").unb64u(), p.s("b_card"))
+        assertEquals(p.s("proof"), proof.b64u())
+        assertEquals(side("pair").s("plaintext"), TeleportCrypto.pairPlaintext(p.s("b_card"), proof).b64u())
+    }
+
+    @Test fun openPairVector() {
+        val opened = TeleportCrypto.openPair(env(side("pair")), recipient, p.s("ps").unb64u(), now)
+        assertEquals(p.s("b_card"), opened.json)
+        assertEquals("Pixel 8", opened.card.name)
+    }
+
+    @Test fun sealPairMatchesVector() {
+        val expected = env(side("pair"))
+        val eph = keyPair(side("pair")["eph"]!!.jsonObject).let { (priv, pub) -> JcaAgreementKey(priv, pub) }
+        val sealed = TeleportCrypto.seal(
+            KIND_PAIR, side("pair").s("plaintext").unb64u(), sender, recipient.publicKey,
+            id = expected.id.unb64u(), ts = expected.ts, ephemeral = eph, nonce = expected.n.unb64u(),
+        )
+        assertEquals(expected.copy(sig = ""), sealed.copy(sig = ""))
+    }
+
+    @Test fun pairOkOpensWithQrKey() {
+        val bKa = keyPair(p["b_ka"]!!.jsonObject).let { (priv, pub) -> JcaAgreementKey(priv, pub) }
+        val pt = TeleportCrypto.open(env(side("pair_ok")), bKa, p["a_ks"]!!.jsonObject.s("pub").unb64u(), now)
+        assertEquals(side("pair_ok").s("plaintext"), pt.b64u())
+    }
+
+    @Test fun rejectsInvalidPairs() {
+        for (c in p["invalid"]!!.jsonArray.map { it.jsonObject }) {
+            val e = assertFailsWith<OpenException>(c.s("name")) {
+                TeleportCrypto.openPair(env(c), recipient, c.s("ps").unb64u(), now)
+            }
+            assertEquals(c.s("error"), e.code, c.s("name"))
+        }
     }
 
     @Test fun signatureEncodingRoundTrips() {

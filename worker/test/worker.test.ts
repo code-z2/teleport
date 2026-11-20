@@ -78,8 +78,17 @@ describe("buildMessages", () => {
     expect(JSON.parse(la.apns.payload.aps["content-state"].env)).toEqual(ENV);
     expect(la.apns.payload.aps["dismissal-date"]).toBe(1300);
   });
-  it("ios: no Live Activity for peer updates", () => {
-    expect(buildMessages({ platform: "ios", fcm: "t", la: "p2s" }, { ...ENV, k: "peer" }, 0)).toHaveLength(1);
+  it("ios: no Live Activity for peer updates or pairing", () => {
+    for (const k of ["peer", "pair", "pair-ok"] as const) {
+      const msgs = buildMessages({ platform: "ios", fcm: "t", la: "p2s" }, { ...ENV, k }, 0) as any[];
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0].apns.payload.aps["mutable-content"]).toBe(1);
+    }
+  });
+  it("accepts the pairing vectors", () => {
+    expect(parseEnvelope(vectors.pairing.pair.env)).toEqual(vectors.pairing.pair.env);
+    expect(parseEnvelope(vectors.pairing.pair_ok.env)).toEqual(vectors.pairing.pair_ok.env);
+    expect(parseEnvelope({ ...ENV, k: "nope" })).toBe("invalid env.k");
   });
 });
 

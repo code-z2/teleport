@@ -106,3 +106,70 @@ Delivery through FCM HTTP v1:
 
 R2 objects get deleted by the recipient after download. A 1-day bucket
 lifecycle rule is the backstop.
+
+---
+
+# v2 additions: multiple devices and single-scan pairing
+
+The envelope format is unchanged (`"v":1`). v2 adds a new pairing card, two
+envelope kinds, and the rule that each install keeps **a list of peers keyed by
+`fp(ks)`** instead of a single peer.
+
+## Kinds
+
+`text`, `blob`, `peer`, **`pair`**, **`pair-ok`**.
+
+## Pairing card v2 (QR)
+
+```
+teleport2:<b64u(utf8(JSON))>
+JSON = { "v":2, "name":"Pixel 8", "platform":"ios"|"android"|"mac",
+         "ka":b64u(65), "ks":b64u(65),
+         "fcm"?:"…", "la"?:"…", "mailbox"?:"…",
+         "ps"?:b64u(16) }
+```
+
+- `ps` is the **pairing secret**. It's present only in the QR code: 16 random
+  bytes, valid for 10 minutes, usable once. It's never sent over the network.
+- A card sent *inside* a message omits `ps`.
+- v1 cards (`teleport1:`) are rejected. v1 pairings must be redone.
+
+## Flow
+
+A shows the QR code; B scans it.
+
+1. B stores A as **pending** and sends A a `pair` envelope. It's sealed to
+   `A.ka` and signed by `B.ks`, exactly like any other envelope (`from` =
+   `fp(B.ks)`). The plaintext is:
+   ```json
+   { "card": "<B's card JSON, as a string, without ps>",
+     "proof": b64u(HMAC-SHA256(key = ps, data = utf8(card string))) }
+   ```
+   The card is carried as a string so the proof covers exact bytes, with no
+   JSON canonicalization needed.
+2. A opens it with **`openPair`**. B isn't a known peer yet, so the order is:
+   1. check `v` and `k == "pair"`;
+   2. decrypt with A's `ka` (`decrypt` on failure);
+   3. parse the card (`encoding` on failure);
+   4. check `fp(card.ks) == from` (`peer` on failure);
+   5. verify `sig` against `card.ks` (`signature`);
+   6. check freshness (`stale`);
+   7. check that the proof matches A's current unused `ps` (`proof`); then the
+      replay cache.
+3. A asks the user **"<card.name> wants to pair. Allow?"**
+4. On Allow, A stores B and sends B a `pair-ok` envelope. Its plaintext is A's
+   card JSON without `ps`, carrying A's current tokens and name. B opens it like
+   any other envelope, using A's `ks` from the scanned QR code, then promotes A
+   from pending to paired.
+
+## `peer` (updates)
+
+The plaintext is `{ "name"?, "fcm"?, "la"?, "mailbox"? }`. Send it to every
+peer when the device is renamed or its push tokens rotate. Missing fields keep
+their previous values.
+
+## Relay
+
+`/v1/send` accepts the new kinds. On iOS, `pair` and `pair-ok` arrive as alert
+pushes ("Pairing request" / "Paired") with the envelope in `env`, and never as
+Live Activities.

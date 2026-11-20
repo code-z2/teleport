@@ -10,32 +10,36 @@ import UIKit
 enum ShareSuggestion {
     static func donate(for peer: Peer) {
         let person = INPerson(
-            personHandle: INPersonHandle(value: peer.fingerprint, type: .unknown),
+            personHandle: INPersonHandle(value: peer.id, type: .unknown),
             nameComponents: nil,
             displayName: peer.name,
             image: avatar(for: peer),
             contactIdentifier: nil,
-            customIdentifier: peer.fingerprint)
+            customIdentifier: peer.id)
         let intent = INSendMessageIntent(
             recipients: [person],
             outgoingMessageType: .outgoingMessageText,
             content: nil,
             speakableGroupName: INSpeakableString(spokenPhrase: peer.name),
-            conversationIdentifier: "teleport-\(peer.fingerprint)",
+            conversationIdentifier: "teleport-\(peer.id)",
             serviceName: nil,
             sender: nil,
             attachments: nil)
         intent.setImage(avatar(for: peer), forParameterNamed: \.speakableGroupName)
         let interaction = INInteraction(intent: intent, response: nil)
         interaction.direction = .outgoing
-        interaction.groupIdentifier = "teleport-\(peer.fingerprint)"
+        interaction.groupIdentifier = "teleport-\(peer.id)"
         interaction.donate(completion: nil)
     }
 
     /// Indigo circle with a phone glyph, matching the app icon.
     private static func avatar(for peer: Peer) -> INImage? {
         let size = CGSize(width: 180, height: 180)
-        let symbol = peer.platform == .ios ? "iphone" : "candybarphone"
+        let symbol = switch peer.platform {
+        case .ios: "iphone"
+        case .android: "candybarphone"
+        case .mac: "laptopcomputer"
+        }
         let png = UIGraphicsImageRenderer(size: size).pngData { _ in
             UIColor(red: 0.31, green: 0.27, blue: 0.90, alpha: 1).setFill()
             UIBezierPath(ovalIn: CGRect(origin: .zero, size: size)).fill()

@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
+import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
@@ -17,6 +18,13 @@ import app.teleport.core.RelayClient
 import app.teleport.core.Teleport
 import app.teleport.core.TeleportJson
 import app.teleport.core.TeleportStore
+import app.teleport.core.PairRequest
+import app.teleport.core.b64u
+import app.teleport.core.randomBytes
+import app.teleport.core.unb64u
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
@@ -31,6 +39,13 @@ class TeleportApp : Application() {
             store = PrefsStore(this),
             relay = RelayClient(BuildConfig.RELAY_URL, BuildConfig.RELAY_KEY),
         )
+    }
+
+    /** Pinged when pushes change what the main screen shows (pairing requests, devices). */
+    val changes = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    fun changed() {
+        changes.tryEmit(Unit)
     }
 
     override fun onCreate() {
@@ -97,16 +112,64 @@ object KeystoreKeys {
 }
 
 /** Public keys and tokens only — nothing here is secret. */
-class PrefsStore(context: Context) : TeleportStore {
+class PrefsStore(private val context: Context) : TeleportStore {
     private val prefs = context.getSharedPreferences("teleport", Context.MODE_PRIVATE)
 
-    override var peer: Peer?
-        get() = prefs.getString("peer", null)?.let { TeleportJson.decodeFromString(Peer.serializer(), it) }
-        set(value) = prefs.edit().putString("peer", value?.let { TeleportJson.encodeToString(Peer.serializer(), it) }).apply()
+    init {
+        // v1 stored a single "peer". v2 pairings are incompatible: drop it (re-pair once).
+        if (prefs.contains("peer")) prefs.edit().remove("peer").apply()
+    }
+
+    private fun <T> readMap(key: String, serializer: KSerializer<T>): Map<String, T> =
+        prefs.getString(key, null)?.let {
+            runCatching { TeleportJson.decodeFromString(MapSerializer(String.serializer(), serializer), it) }.getOrNull()
+        } ?: emptyMap()
+
+    private fun <T> writeMap(key: String, serializer: KSerializer<T>, value: Map<String, T>) =
+        prefs.edit().putString(key, TeleportJson.encodeToString(MapSerializer(String.serializer(), serializer), value)).commit()
+
+    override var peers: Map<String, Peer>
+        get() = readMap("peers", Peer.serializer())
+        set(value) { writeMap("peers", Peer.serializer(), value) }
+
+    override var pendingOutbound: Map<String, Peer>
+        get() = readMap("pendingOutbound", Peer.serializer())
+            .filterValues { it.pairedAt > System.currentTimeMillis() - 10 * 60_000 }
+        set(value) { writeMap("pendingOutbound", Peer.serializer(), value) }
+
+    override var pairRequests: Map<String, PairRequest>
+        get() = readMap("pairRequests", PairRequest.serializer()).filterValues { it.expires > System.currentTimeMillis() }
+        set(value) { writeMap("pairRequests", PairRequest.serializer(), value) }
+
+    /** Our name as other devices see it. Defaults to the phone's name from Settings, then the model. */
+    override var deviceName: String?
+        get() = prefs.getString("deviceName", null)
+            ?: Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)
+            ?: Build.MODEL
+        set(value) = prefs.edit().putString("deviceName", value).apply()
 
     override var ownFcmToken: String?
         get() = prefs.getString("fcm", null)
         set(value) = prefs.edit().putString("fcm", value).apply()
+
+    override fun newPairingSecret(): ByteArray {
+        val secret = randomBytes(16)
+        prefs.edit()
+            .putString("ps", secret.b64u())
+            .putLong("psExpires", System.currentTimeMillis() + 10 * 60_000)
+            .putBoolean("psUsed", false)
+            .commit()
+        return secret
+    }
+
+    override fun currentPairingSecret(): ByteArray? {
+        if (prefs.getBoolean("psUsed", true) || prefs.getLong("psExpires", 0) < System.currentTimeMillis()) return null
+        return prefs.getString("ps", null)?.unb64u()
+    }
+
+    override fun markPairingSecretUsed() {
+        prefs.edit().putBoolean("psUsed", true).commit()
+    }
 
     @Synchronized
     override fun markSeen(id: String): Boolean {
@@ -120,4 +183,5 @@ class PrefsStore(context: Context) : TeleportStore {
     }
 }
 
-val deviceName: String get() = Build.MODEL
+/** This device's name as other devices see it. */
+val Context.deviceName: String get() = TeleportApp.of(this).teleport.store.deviceName ?: Build.MODEL

@@ -9,6 +9,12 @@ public enum Clip: Sendable {
 public enum TeleportError: Error, Sendable {
     case notPaired
     case tooLarge
+    /// More than one device is paired and none was chosen.
+    case chooseDevice
+    /// The QR code is our own, or isn't a Teleport v2 code.
+    case invalidCode
+    /// The pairing request expired or was already handled.
+    case noSuchRequest
 }
 
 /// High-level send/receive used by the app and every extension.
@@ -17,48 +23,109 @@ public struct Teleport: Sendable {
     public let keys: DeviceKeys
     public let store: SharedStore
     public let relay: RelayClient
+    public let platform: Platform
 
     public static let maxBlobBytes = 10 * 1024 * 1024
 
-    public init(config: TeleportConfig = .fromBundle()) throws {
+    public init(config: TeleportConfig = .fromBundle(), platform: Platform = .ios) throws {
         self.config = config
         self.keys = try DeviceKeys.loadOrCreate(accessGroup: config.keychainGroup)
         self.store = SharedStore(appGroup: config.appGroup)
         self.relay = RelayClient(config: config)
+        self.platform = platform
     }
 
-    func peerOrThrow() throws -> Peer {
-        guard let peer = store.peer else { throw TeleportError.notPaired }
-        return peer
+    public var myID: String { TeleportCrypto.fingerprint(keys.signing.publicKey) }
+
+    /// The one device to send to when the caller didn't choose.
+    public func defaultPeer() throws -> Peer {
+        let peers = store.sortedPeers
+        if peers.isEmpty { throw TeleportError.notPaired }
+        guard peers.count == 1 else { throw TeleportError.chooseDevice }
+        return peers[0]
     }
 
-    // MARK: Pairing
+    // MARK: Pairing (SPEC.md "v2 additions")
 
-    public func myCard(name: String) throws -> PairingCard {
+    public func myCard(name: String) -> PairingCard {
         PairingCard(
-            name: name, platform: .ios,
+            name: name, platform: platform,
             ka: keys.agreement.publicKey, ks: keys.signing.publicKey,
-            fcm: store.ownFCMToken ?? "", la: store.ownLiveActivityToken)
+            fcm: store.ownFCMToken, la: store.ownLiveActivityToken)
     }
 
-    public func pair(with encodedCard: String) throws -> Peer {
-        let peer = try Peer(card: PairingCard.decode(encodedCard))
-        store.peer = peer
+    /// Our QR code, with a fresh one-time secret (valid 10 minutes).
+    public func qrCode(name: String) throws -> String {
+        var card = myCard(name: name)
+        card.ps = store.newPairingSecret().base64URL
+        return try card.encoded()
+    }
+
+    /// We scanned another device's QR code: remember it as pending and send it a `pair`
+    /// request proving we saw its screen. It becomes a peer when its `pair-ok` arrives.
+    @discardableResult
+    public func scan(_ code: String, name: String) async throws -> Peer {
+        guard let card = try? PairingCard.decode(code), let ps = card.ps.flatMap({ Data(base64URL: $0) }) else {
+            throw TeleportError.invalidCode
+        }
+        var peer = try Peer(card: card)
+        guard peer.id != myID else { throw TeleportError.invalidCode }
+        peer.pairedAt = Date()
+
+        let myJSON = try myCard(name: name).json()
+        let body = try TeleportCrypto.pairPlaintext(
+            cardJSON: myJSON, proof: TeleportCrypto.pairProof(secret: ps, cardJSON: myJSON))
+        let env = try TeleportCrypto.seal(kind: .pair, plaintext: body, signer: keys.signing, recipientKa: peer.ka)
+        try await relay.send(env, to: peer)
+
+        var pending = store.pendingOutbound
+        pending[peer.id] = peer
+        store.pendingOutbound = pending
         return peer
     }
 
-    /// Call when our FCM or push-to-start token changes.
-    public func announceTokens(name: String) async throws {
-        guard let peer = store.peer, let fcm = store.ownFCMToken else { return }
-        let body = try JSONEncoder().encode(PeerUpdate(fcm: fcm, la: store.ownLiveActivityToken, name: name))
-        let env = try TeleportCrypto.seal(kind: .peer, plaintext: body, signer: keys.signing, recipientKa: peer.ka)
+    /// The user tapped Allow on a pairing request: store the device and send `pair-ok`.
+    @discardableResult
+    public func allow(_ requestID: String, name: String) async throws -> Peer {
+        guard let request = store.pairRequests[requestID] else { throw TeleportError.noSuchRequest }
+        let peer = try Peer(card: JSONDecoder().decode(PairingCard.self, from: Data(request.cardJSON.utf8)))
+        let body = Data(try myCard(name: name).json().utf8)
+        let env = try TeleportCrypto.seal(kind: .pairOK, plaintext: body, signer: keys.signing, recipientKa: peer.ka)
         try await relay.send(env, to: peer)
+
+        var peers = store.peers
+        peers[peer.id] = peer
+        store.peers = peers
+        deny(requestID)
+        return peer
+    }
+
+    public func deny(_ requestID: String) {
+        var requests = store.pairRequests
+        requests[requestID] = nil
+        store.pairRequests = requests
+    }
+
+    public func remove(_ peerID: String) {
+        var peers = store.peers
+        peers[peerID] = nil
+        store.peers = peers
+    }
+
+    /// Tell every paired device our current name and push addresses.
+    public func announce(name: String) async {
+        let update = PeerUpdate(name: name, fcm: store.ownFCMToken, la: store.ownLiveActivityToken)
+        guard let body = try? JSONEncoder().encode(update) else { return }
+        for peer in store.peers.values {
+            guard let env = try? TeleportCrypto.seal(kind: .peer, plaintext: body, signer: keys.signing, recipientKa: peer.ka)
+            else { continue }
+            try? await relay.send(env, to: peer)
+        }
     }
 
     // MARK: Send
 
-    public func send(_ clip: Clip) async throws {
-        let peer = try peerOrThrow()
+    public func send(_ clip: Clip, to peer: Peer) async throws {
         switch clip {
         case .text(let text):
             let env = try TeleportCrypto.seal(
@@ -87,37 +154,79 @@ public struct Teleport: Sendable {
     // MARK: Receive
 
     public enum Received: Sendable {
-        case clip(Clip, id: String)
+        case clip(Clip, id: String, from: Peer)
         case peerUpdated(Peer)
+        /// Someone scanned our QR code; the user must Allow or Deny.
+        case pairRequest(PairRequest)
+        /// A device we scanned accepted.
+        case paired(Peer)
     }
 
     /// Verifies and decrypts an envelope. `firstDelivery` is true in the NSE: it
-    /// enforces the replay cache and applies peer updates. The copy paths
-    /// (notification action, Live Activity button) re-open with `false`.
+    /// enforces the replay cache and applies pairing and device updates. The copy
+    /// paths (notification action, Live Activity button) re-open clips with `false`.
     public func receive(_ envJSON: String, firstDelivery: Bool) async throws -> Received {
         let env = try Envelope.parse(envJSON)
-        var peer = try peerOrThrow()
+
+        if env.k == .pair {
+            guard firstDelivery else { throw OpenError.kind }
+            guard let secret = store.currentPairingSecret else { throw OpenError.proof }
+            let (card, json) = try TeleportCrypto.openPair(env, ownKa: keys.agreement, secret: secret)
+            guard store.markSeen(env.id) else { throw OpenError.replay }
+            store.markPairingSecretUsed()
+            let request = PairRequest(
+                cardJSON: json, name: card.name, platform: card.platform,
+                expires: Date().addingTimeInterval(600), id: env.from)
+            var requests = store.pairRequests
+            requests[request.id] = request
+            store.pairRequests = requests
+            return .pairRequest(request)
+        }
+
+        // Everything else must come from a paired device (or, for pair-ok, one we scanned).
+        let known = store.peers[env.from]
+        let pending = env.k == .pairOK ? store.pendingOutbound[env.from] : nil
+        guard var peer = known ?? pending else { throw OpenError.peer }
         let plaintext = try TeleportCrypto.open(env, ownKa: keys.agreement, senderKs: peer.ks)
         if firstDelivery, !store.markSeen(env.id) { throw OpenError.replay }
 
         switch env.k {
         case .text:
-            return .clip(.text(String(decoding: plaintext, as: UTF8.self)), id: env.id)
+            return .clip(.text(String(decoding: plaintext, as: UTF8.self)), id: env.id, from: peer)
         case .blob:
             let pointer = try JSONDecoder().decode(BlobPointer.self, from: plaintext)
             let bytes = try await fetchBlob(pointer, envelopeID: env.id)
             if pointer.mime.hasPrefix("text/") {
-                return .clip(.text(String(decoding: bytes, as: UTF8.self)), id: env.id)
+                return .clip(.text(String(decoding: bytes, as: UTF8.self)), id: env.id, from: peer)
             }
-            return .clip(.image(bytes, mime: pointer.mime), id: env.id)
+            return .clip(.image(bytes, mime: pointer.mime), id: env.id, from: peer)
         case .peer:
-            guard firstDelivery else { throw OpenError.kind }
+            guard firstDelivery, known != nil else { throw OpenError.kind }
             let update = try JSONDecoder().decode(PeerUpdate.self, from: plaintext)
-            peer.fcm = update.fcm
-            peer.la = update.la
             if let name = update.name { peer.name = name }
-            store.peer = peer
+            if let fcm = update.fcm { peer.fcm = fcm }
+            if let la = update.la { peer.la = la }
+            if let mailbox = update.mailbox { peer.mailbox = mailbox }
+            var peers = store.peers
+            peers[peer.id] = peer
+            store.peers = peers
             return .peerUpdated(peer)
+        case .pairOK:
+            guard firstDelivery, pending != nil else { throw OpenError.kind }
+            // Their card carries their current name and push addresses; keys must not change.
+            let card = try JSONDecoder().decode(PairingCard.self, from: plaintext)
+            var confirmed = try Peer(card: card)
+            guard confirmed.id == peer.id, confirmed.ka == peer.ka else { throw OpenError.peer }
+            confirmed.pairedAt = Date()
+            var peers = store.peers
+            peers[confirmed.id] = confirmed
+            store.peers = peers
+            var outbound = store.pendingOutbound
+            outbound[confirmed.id] = nil
+            store.pendingOutbound = outbound
+            return .paired(confirmed)
+        case .pair:
+            throw OpenError.kind  // handled above
         }
     }
 

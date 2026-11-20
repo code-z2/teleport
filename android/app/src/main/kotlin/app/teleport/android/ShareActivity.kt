@@ -1,13 +1,14 @@
 package app.teleport.android
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.core.content.IntentCompat
 import app.teleport.core.Clip
-import app.teleport.core.NotPairedException
+import app.teleport.core.Peer
 import app.teleport.core.PeerGoneException
 import app.teleport.core.Teleport
 import app.teleport.core.TooLargeException
@@ -30,17 +31,33 @@ class ShareActivity : Activity() {
         if (clip == null) {
             finish(); return
         }
-        toast("Teleporting…")
+        val teleport = app.teleport
+        val peers = teleport.sortedPeers()
+        // Direct Share targets carry the device's fingerprint as the shortcut id.
+        val chosen = intent.getStringExtra(Intent.EXTRA_SHORTCUT_ID)?.let { teleport.store.peers[it] }
+        when {
+            chosen != null -> send(clip, chosen)
+            peers.isEmpty() -> { toast("Open Teleport to pair first"); finish() }
+            peers.size == 1 -> send(clip, peers[0])
+            else -> AlertDialog.Builder(this, android.R.style.Theme_Material_Light_Dialog_Alert)
+                .setTitle("Teleport to…")
+                .setItems(peers.map { it.name }.toTypedArray()) { _, i -> send(clip, peers[i]) }
+                .setOnCancelListener { finish() }
+                .show()
+        }
+    }
+
+    private fun send(clip: Clip, peer: Peer) {
+        val app = TeleportApp.of(this)
+        toast("Teleporting to ${peer.name}…")
         // Application-scoped so finishing the activity doesn't cancel the upload.
         appScope.launch {
             val message = try {
-                app.teleport.send(clip)
-                app.teleport.store.peer?.let { PeerShortcut.publish(app, it) }
-                "Sent ✓"
-            } catch (e: NotPairedException) {
-                "Open Teleport to pair first"
+                app.teleport.send(clip, peer)
+                PeerShortcut.publish(app, peer)
+                "Sent to ${peer.name} ✓"
             } catch (e: PeerGoneException) {
-                "Other phone's token expired — re-pair"
+                "${peer.name}'s push address expired — open Teleport there or re-pair"
             } catch (e: Exception) {
                 "Send failed: ${e.message}"
             }
