@@ -19,10 +19,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** Transparent ACTION_SEND target: read → encrypt → relay → toast → finish. */
-class ShareActivity : Activity() {
+open class ShareActivity : Activity() {
+    /** For subclasses that get their clip elsewhere (the Quick Settings tile). */
+    protected fun callSuperOnCreate(savedInstanceState: Bundle?) = super.onCreate(savedInstanceState)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val app = TeleportApp.of(this)
         val clip = try {
             extract(intent)
         } catch (e: TooLargeException) {
@@ -31,10 +33,15 @@ class ShareActivity : Activity() {
         if (clip == null) {
             finish(); return
         }
-        val teleport = app.teleport
-        val peers = teleport.sortedPeers()
         // Direct Share targets carry the device's fingerprint as the shortcut id.
-        val chosen = intent.getStringExtra(Intent.EXTRA_SHORTCUT_ID)?.let { teleport.store.peers[it] }
+        deliver(clip, intent.getStringExtra(Intent.EXTRA_SHORTCUT_ID))
+    }
+
+    /** Sends to [chosenId] if given, the only device if there's one, otherwise asks which. */
+    protected fun deliver(clip: Clip, chosenId: String? = null) {
+        val teleport = TeleportApp.of(this).teleport
+        val peers = teleport.sortedPeers()
+        val chosen = chosenId?.let { teleport.store.peers[it] }
         when {
             chosen != null -> send(clip, chosen)
             peers.isEmpty() -> { toast("Open Teleport to pair first"); finish() }
@@ -85,7 +92,7 @@ class ShareActivity : Activity() {
         return Clip.Text(text)
     }
 
-    private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+    protected fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
 
     companion object {
         val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

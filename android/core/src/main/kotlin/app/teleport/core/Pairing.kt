@@ -10,7 +10,7 @@ import kotlinx.serialization.Serializable
 data class PairingCard(
     val v: Int = 2,
     val name: String,
-    val platform: String, // "ios" | "android" | "mac"
+    val platform: String, // "ios" | "android" | "mac" | "windows"
     val ka: String,
     val ks: String,
     val fcm: String? = null,
@@ -26,7 +26,7 @@ data class PairingCard(
 
     companion object {
         const val PREFIX = "teleport2:"
-        val PLATFORMS = setOf("ios", "android", "mac")
+        val PLATFORMS = setOf("ios", "android", "mac", "windows")
 
         fun decode(s: String): PairingCard {
             if (!s.startsWith(PREFIX)) throw OpenException("encoding")
@@ -57,6 +57,9 @@ data class Peer(
 ) {
     val kaBytes: ByteArray get() = ka.unb64u()
     val ksBytes: ByteArray get() = ks.unb64u()
+
+    /** Computers (Mac, Windows) are reached through a relay mailbox, and can be browsed. */
+    val hasMailbox: Boolean get() = platform == "mac" || platform == "windows"
 
     /** `fp(ks)`: the device's identity, and the `from` of every envelope it sends. */
     val id: String get() = TeleportCrypto.fingerprint(ksBytes)

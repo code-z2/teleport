@@ -5,7 +5,23 @@ import WidgetKit
 
 @main
 struct TeleportWidgets: WidgetBundle {
-    var body: some Widget { ClipLiveActivity() }
+    var body: some Widget {
+        ClipLiveActivity()
+        TeleportClipboardControl()
+    }
+}
+
+/// The Control Center button: Edit Controls ▸ Add a Control ▸ Teleport.
+struct TeleportClipboardControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "app.teleport.clipboard") {
+            ControlWidgetButton(action: TeleportClipboardIntent()) {
+                Label("Teleport", systemImage: "arrow.right.doc.on.clipboard")
+            }
+        }
+        .displayName("Teleport Clipboard")
+        .description("Send what you copied to one of your devices.")
+    }
 }
 
 /// Started remotely by push-to-start. Shows no plaintext (content-state is ciphertext);

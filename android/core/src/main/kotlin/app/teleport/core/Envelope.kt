@@ -22,7 +22,7 @@ data class Envelope(
 
     companion object {
         const val MAX_BYTES = 3000
-        val KINDS = setOf(KIND_TEXT, KIND_BLOB, KIND_PEER, KIND_PAIR, KIND_PAIR_OK)
+        val KINDS = setOf(KIND_TEXT, KIND_BLOB, KIND_PEER, KIND_PAIR, KIND_PAIR_OK, KIND_PAIR_NO)
         fun parse(json: String): Envelope = TeleportJson.decodeFromString(serializer(), json)
     }
 }
@@ -32,6 +32,7 @@ const val KIND_BLOB = "blob"
 const val KIND_PEER = "peer"
 const val KIND_PAIR = "pair"
 const val KIND_PAIR_OK = "pair-ok"
+const val KIND_PAIR_NO = "pair-no"
 
 val TeleportJson = Json { ignoreUnknownKeys = false; explicitNulls = false; encodeDefaults = true }
 

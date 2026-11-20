@@ -111,7 +111,7 @@ class MacBrowserActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         val peer = intent.getStringExtra(EXTRA_PEER)?.let { teleport.store.peers[it] }
-        if (peer == null || peer.platform != "mac") { finish(); return }
+        if (peer == null || !peer.hasMailbox) { finish(); return }
         mac = peer
         previewCache.deleteRecursively()  // previews are temporary
         setContent { TeleportTheme { Screen() } }

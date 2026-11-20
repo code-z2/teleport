@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Teleport.Core/Teleport.Core.csproj" />
+  <Project Path="Teleport.Core.Tests/Teleport.Core.Tests.csproj" />
+  <Project Path="Teleport.Windows/Teleport.Windows.csproj" />
+</Solution>

@@ -80,9 +80,9 @@ public struct RelayClient: Sendable {
         struct Body: Encodable { let to: To; let env: Envelope }
         // Macs are reached through their relay mailbox (a live connection); phones by push.
         let to: To
-        if peer.platform == .mac {
+        if peer.platform.hasMailbox {
             guard let mailbox = peer.mailbox else { throw RelayError.http(0, "\(peer.name) has no mailbox") }
-            to = To(platform: .mac, fcm: nil, la: nil, mailbox: mailbox)
+            to = To(platform: peer.platform, fcm: nil, la: nil, mailbox: mailbox)
         } else {
             guard let fcm = peer.fcm, !fcm.isEmpty else { throw RelayError.http(0, "\(peer.name) has no push address yet") }
             to = To(platform: peer.platform, fcm: fcm, la: peer.platform == .ios ? peer.la : nil, mailbox: nil)

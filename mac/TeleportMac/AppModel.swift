@@ -120,6 +120,10 @@ final class AppModel {
                 case .paired(let peer):
                     reload()
                     activity = "Paired with \(peer.name)"
+                case .declined(let peer):
+                    reload()
+                    activity = "\(peer.name) declined pairing"
+                    Notifier.post(title: "\(peer.name) declined", body: "Pairing wasn't allowed.")
                 case .peerUpdated:
                     reload()
                 }
@@ -136,7 +140,19 @@ final class AppModel {
     func showPairingCode() {
         guard let teleport else { return }
         pairingCode = try? teleport.qrCode(name: name)
+        // A code is single-use and lasts 10 minutes: while it's on screen, swap in a fresh
+        // one as soon as it's spent or expired, so the QR shown always works.
+        codeRefresh?.cancel()
+        codeRefresh = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, self.pairingCode != nil else { return }
+                if teleport.store.currentPairingSecret == nil { self.pairingCode = try? teleport.qrCode(name: self.name) }
+            }
+        }
     }
+
+    private var codeRefresh: Task<Void, Never>?
 
     func allow(_ request: PairRequest) {
         guard let teleport else { return }

@@ -14,7 +14,7 @@ public actor FileSessionClient {
 
     /// Opens a session to `mac` through its relay mailbox.
     public static func connect(teleport: Teleport, to mac: Peer) async throws -> FileSessionClient {
-        guard mac.platform == .mac, let mailbox = mac.mailbox else { throw FileSessionError.protocolError }
+        guard mac.platform.hasMailbox, let mailbox = mac.mailbox else { throw FileSessionError.protocolError }
         if await teleport.relay.isOnline(mailbox: mailbox) == false { throw FileSessionError.offline }
         let pipe = WebSocketPipe(teleport.relay.request("v1/mailbox/\(mailbox)/session", method: "GET"))
         do {

@@ -47,11 +47,11 @@ class RelayClient(private val baseUrl: String, private val relayKey: String) {
     }
 
     fun send(env: Envelope, to: Peer) {
-        // Macs are reached through their relay mailbox (a live connection); phones by push.
+        // Computers are reached through their relay mailbox (a live connection); phones by push.
         val body = buildJsonObject {
             put("to", buildJsonObject {
                 put("platform", to.platform)
-                if (to.platform == "mac") {
+                if (to.hasMailbox) {
                     put("mailbox", to.mailbox ?: throw RelayException(0, "${to.name} has no mailbox"))
                 } else {
                     put("fcm", to.fcm?.takeIf { it.isNotEmpty() } ?: throw RelayException(0, "${to.name} has no push address yet"))

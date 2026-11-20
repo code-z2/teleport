@@ -58,6 +58,8 @@ class MessagingService : FirebaseMessagingService() {
                 PeerShortcut.publish(this, received.peer)
                 ClipDelivery.notify(this, ClipDelivery.base(this, "Paired with ${received.peer.name}", "You can now teleport between the two."))
             }
+            is Received.Declined ->
+                ClipDelivery.notify(this, ClipDelivery.base(this, "${received.peer.name} declined", "Pairing wasn't allowed. Scan a new code to try again."))
         }
     }
 

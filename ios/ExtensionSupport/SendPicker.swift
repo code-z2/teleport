@@ -75,7 +75,7 @@ final class SendModel {
     /// Keeps each Mac's label live while the picker is open: a Mac that reconnects
     /// (after sleep or a network change) flips to Online without reopening the sheet.
     private func watchMacs(_ teleport: Teleport) {
-        for peer in peers where peer.platform == .mac {
+        for peer in peers where peer.platform.hasMailbox {
             guard let mailbox = peer.mailbox else { continue }
             Task { [weak self] in
                 while let self, self.phase == .picking {
@@ -120,6 +120,7 @@ final class SendModel {
         case .ios: "iPhone"
         case .android: "Android phone"
         case .mac: "Mac"
+        case .windows: "Windows PC"
         }
     }
 
@@ -198,7 +199,7 @@ struct SendPicker: View {
 
     @ViewBuilder
     private func subtitle(_ peer: Peer) -> some View {
-        if peer.platform == .mac {
+        if peer.platform.hasMailbox {
             switch model.online[peer.id] {
             case true?: Label("Online", systemImage: "circle.fill").labelStyle(StatusLabel(color: .green))
             case false?: Label("Offline", systemImage: "circle.fill").labelStyle(StatusLabel(color: .red))
@@ -216,6 +217,7 @@ struct SendPicker: View {
         case .ios: "iphone"
         case .android: "candybarphone"
         case .mac: "laptopcomputer"
+        case .windows: "pc"
         }
     }
 }

@@ -117,7 +117,7 @@ envelope kinds, and the rule that each install keeps **a list of peers keyed by
 
 ## Kinds
 
-`text`, `blob`, `peer`, **`pair`**, **`pair-ok`**.
+`text`, `blob`, `peer`, **`pair`**, **`pair-ok`**, **`pair-no`**.
 
 ## Pairing card v2 (QR)
 
@@ -161,6 +161,11 @@ A shows the QR code; B scans it.
    card JSON without `ps`, carrying A's current tokens and name. B opens it like
    any other envelope, using A's `ks` from the scanned QR code, then promotes A
    from pending to paired.
+
+5. On Deny, A sends B a **`pair-no`** envelope (plaintext `{}`), sealed to `B.ka` and
+   signed by `A.ks` like `pair-ok`. B opens it with A's `ks` from the QR code, drops A
+   from pending and tells the user "<A> declined". Without it, B would wait until the
+   10-minute pending window ran out.
 
 ## `peer` (updates)
 

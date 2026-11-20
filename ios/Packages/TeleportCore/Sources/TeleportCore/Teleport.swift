@@ -53,7 +53,7 @@ public struct Teleport: Sendable {
             ka: keys.agreement.publicKey, ks: keys.signing.publicKey,
             fcm: store.ownFCMToken, la: store.ownLiveActivityToken,
             // A Mac is reached through its relay mailbox, named by its own id.
-            mailbox: platform == .mac ? myID : nil)
+            mailbox: platform.hasMailbox ? myID : nil)
     }
 
     /// Our QR code, with a fresh one-time secret (valid 10 minutes).
@@ -98,11 +98,24 @@ public struct Teleport: Sendable {
         var peers = store.peers
         peers[peer.id] = peer
         store.peers = peers
-        deny(requestID)
+        removeRequest(requestID)
         return peer
     }
 
+    /// The user tapped Deny: forget the request and tell the device, so it stops waiting.
     public func deny(_ requestID: String) {
+        let request = store.pairRequests[requestID]
+        removeRequest(requestID)
+        guard let request, let card = try? JSONDecoder().decode(PairingCard.self, from: Data(request.cardJSON.utf8)),
+              let peer = try? Peer(card: card) else { return }
+        let relay = relay, signing = keys.signing
+        Task {
+            guard let env = try? TeleportCrypto.seal(kind: .pairNo, plaintext: Data("{}".utf8), signer: signing, recipientKa: peer.ka) else { return }
+            try? await relay.send(env, to: peer)
+        }
+    }
+
+    private func removeRequest(_ requestID: String) {
         var requests = store.pairRequests
         requests[requestID] = nil
         store.pairRequests = requests
@@ -162,6 +175,8 @@ public struct Teleport: Sendable {
         case pairRequest(PairRequest)
         /// A device we scanned accepted.
         case paired(Peer)
+        /// A device we scanned tapped Deny.
+        case declined(Peer)
     }
 
     /// Verifies and decrypts an envelope. `firstDelivery` is true in the NSE: it
@@ -187,7 +202,7 @@ public struct Teleport: Sendable {
 
         // Everything else must come from a paired device (or, for pair-ok, one we scanned).
         let known = store.peers[env.from]
-        let pending = env.k == .pairOK ? store.pendingOutbound[env.from] : nil
+        let pending = env.k == .pairOK || env.k == .pairNo ? store.pendingOutbound[env.from] : nil
         guard var peer = known ?? pending else { throw OpenError.peer }
         let plaintext = try TeleportCrypto.open(env, ownKa: keys.agreement, senderKs: peer.ks)
         if firstDelivery, !store.markSeen(env.id) { throw OpenError.replay }
@@ -227,6 +242,12 @@ public struct Teleport: Sendable {
             outbound[confirmed.id] = nil
             store.pendingOutbound = outbound
             return .paired(confirmed)
+        case .pairNo:
+            guard firstDelivery, let pending, known == nil else { throw OpenError.kind }
+            var outbound = store.pendingOutbound
+            outbound[pending.id] = nil
+            store.pendingOutbound = outbound
+            return .declined(pending)
         case .pair:
             throw OpenError.kind  // handled above
         }

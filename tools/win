@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Develop the Windows app from this Mac over SSH (Host "win" in ~/.ssh/config).
+#
+#   tools/win sync          copy windows/ and protocol/ to the PC (plus the gitignored relay config)
+#   tools/win build         dotnet build
+#   tools/win test          dotnet test (core, against protocol/vectors.json)
+#   tools/win run           build, stop any running copy, launch on the signed-in desktop
+#   tools/win stop          quit the app
+#   tools/win shot [file]   screenshot of the PC's desktop, copied here (default: scratch PNG)
+#   tools/win logs [n]      last n lines of the app's log (default 60)
+#   tools/win ps '<code>'   run PowerShell on the PC
+#
+# Programs started over SSH run in a session with no desktop, so `run` and `shot` go
+# through a one-off scheduled task in the signed-in user's interactive session.
+set -euo pipefail
+
+HOST=${TELEPORT_WIN_HOST:-win}
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+REMOTE='C:\Users\anyao\dev\teleport'      # Windows path
+REMOTE_POSIX='dev/teleport'                # relative to the SSH home, for tar
+APP_EXE="$REMOTE"'\windows\Teleport.Windows\bin\Debug\net9.0-windows\Teleport.exe'
+LOG='$env:LOCALAPPDATA\Teleport\teleport.log'
+
+# PowerShell over SSH without quoting trouble: -EncodedCommand takes UTF-16LE base64.
+ps() {
+    local enc
+    enc=$(printf '%s' "\$ProgressPreference = 'SilentlyContinue'
+$1" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\n')
+    ssh "$HOST" "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $enc"
+}
+
+# Runs PowerShell code in the signed-in user's desktop session and waits for it.
+ps_interactive() {
+    local code=$1 enc
+    enc=$(printf '%s' "$code" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\n')
+    ps "
+\$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand $enc'
+\$principal = New-ScheduledTaskPrincipal -UserId \$env:USERNAME -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName TeleportDev -Action \$action -Principal \$principal -Force | Out-Null
+Start-ScheduledTask -TaskName TeleportDev
+for (\$i = 0; \$i -lt 60; \$i++) {
+    Start-Sleep -Milliseconds 250
+    if ((Get-ScheduledTask -TaskName TeleportDev).State -ne 'Running') { break }
+}
+Unregister-ScheduledTask -TaskName TeleportDev -Confirm:\$false
+"
+}
+
+relay_config() {
+    # The relay URL and key live only in gitignored config; never in the repo.
+    local cfg="$ROOT/ios/Config/Teleport.xcconfig"
+    local url key
+    url=$(grep -E '^TELEPORT_RELAY_URL' "$cfg" | sed 's/.*= *//; s#\$()##g')
+    key=$(grep -E '^TELEPORT_RELAY_KEY' "$cfg" | sed 's/.*= *//')
+    printf '{ "relayUrl": "%s", "relayKey": "%s" }\n' "$url" "$key"
+}
+
+cmd=${1:-help}; shift || true
+case "$cmd" in
+sync)
+    ps "New-Item -ItemType Directory -Force '$REMOTE' | Out-Null"
+    (cd "$ROOT" && COPYFILE_DISABLE=1 tar -czf - \
+        --exclude 'bin' --exclude 'obj' --exclude '.vs' --exclude '*.user' \
+        windows protocol/vectors.json protocol/SPEC.md) |
+        ssh "$HOST" "tar -xzf - -C $REMOTE_POSIX"
+    relay_config | ssh "$HOST" "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force '$REMOTE\\windows\\Teleport.Windows' | Out-Null; \$input | Set-Content -Encoding utf8 '$REMOTE\\windows\\Teleport.Windows\\relay.json'\""
+    echo "synced → $HOST:$REMOTE"
+    ;;
+build)
+    "$0" sync
+    ps "Set-Location '$REMOTE\windows'; dotnet build -c Debug -nologo -v q 2>&1 | Select-String -Pattern 'error|warn|Build succeeded|FAILED' | ForEach-Object { \$_.Line }"
+    ;;
+test)
+    "$0" sync
+    ps "Set-Location '$REMOTE\windows'; dotnet test -nologo -v q 2>&1 | Select-String -Pattern 'error|Passed!|Failed|failed' | ForEach-Object { \$_.Line }"
+    ;;
+stop)
+    ps "Stop-Process -Name Teleport -ErrorAction SilentlyContinue; 'stopped'"
+    ;;
+run)
+    "$0" stop >/dev/null
+    "$0" build
+    ps_interactive "Start-Process '$APP_EXE'"
+    sleep 2
+    ps "Get-Process Teleport -ErrorAction SilentlyContinue | Select-Object Id, StartTime, @{n='MB';e={[int](\$_.WorkingSet64/1MB)}} | Format-Table -AutoSize | Out-String"
+    ;;
+shot)
+    out=${1:-${TMPDIR:-/tmp}/teleport-win-shot.png}
+    ps_interactive "
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public static class Dpi { [DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware(); }'
+[Dpi]::SetProcessDPIAware() | Out-Null
+\$b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+\$bmp = New-Object System.Drawing.Bitmap \$b.Width, \$b.Height
+\$g = [System.Drawing.Graphics]::FromImage(\$bmp)
+\$g.CopyFromScreen(\$b.Left, \$b.Top, 0, 0, \$bmp.Size)
+\$bmp.Save(\"\$env:TEMP\teleport-shot.png\", [System.Drawing.Imaging.ImageFormat]::Png)
+"
+    scp -q "$HOST:AppData/Local/Temp/teleport-shot.png" "$out"
+    echo "$out"
+    ;;
+logs)
+    ps "Get-Content -Tail ${1:-60} \"$LOG\" -ErrorAction SilentlyContinue"
+    ;;
+ps)
+    ps "$1"
+    ;;
+*)
+    sed -n '2,13p' "$0"
+    ;;
+esac

@@ -80,7 +80,7 @@ public actor FileServer {
             return refuse("version")
         }
         guard hello.v == 1 else { return refuse("version") }
-        guard let peer = phones(hello.from), peer.platform != .mac else { return refuse("denied") }
+        guard let peer = phones(hello.from), peer.platform.isPhone else { return refuse("denied") }
         let helloT = SessionCrypto.helloTranscript(mailbox: mailbox, hello)
         guard let sig = Data(base64URL: hello.sig), let phoneEpk = Data(base64URL: hello.epk),
               SessionCrypto.verify(sig, of: helloT, by: peer.ks)

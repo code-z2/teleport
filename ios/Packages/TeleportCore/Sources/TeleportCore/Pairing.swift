@@ -1,6 +1,12 @@
 import Foundation
 
-public enum Platform: String, Codable, Sendable { case ios, android, mac }
+public enum Platform: String, Codable, Sendable {
+    case ios, android, mac, windows
+
+    /// Computers are reached through a relay mailbox (and can be browsed); phones by push.
+    public var hasMailbox: Bool { self == .mac || self == .windows }
+    public var isPhone: Bool { self == .ios || self == .android }
+}
 
 /// What a device shows as a QR code: `teleport2:<b64u(JSON)>`. See SPEC.md "v2 additions".
 /// `ps` (the one-time pairing secret) is only ever in the QR code, never sent over the network.

@@ -34,6 +34,8 @@ sealed interface Received {
     data class PairRequested(val request: PairRequest) : Received
     /** A device we scanned accepted. */
     data class Paired(val peer: Peer) : Received
+    /** A device we scanned tapped Deny. */
+    data class Declined(val peer: Peer) : Received
 }
 
 class NotPairedException : Exception("not paired")
@@ -97,12 +99,18 @@ class Teleport(
         val body = myCard(name).json().toByteArray(Charsets.UTF_8)
         relay.send(TeleportCrypto.seal(KIND_PAIR_OK, body, signing, peer.kaBytes), peer)
         store.peers = store.peers + (peer.id to peer)
-        deny(requestId)
+        store.pairRequests = store.pairRequests - requestId
         return peer
     }
 
+    /** The user tapped Deny: forget the request and tell the device, so it stops waiting. Safe on any thread. */
     fun deny(requestId: String) {
+        val request = store.pairRequests[requestId]
         store.pairRequests = store.pairRequests - requestId
+        val peer = request?.let { runCatching { Peer.from(lenientJson.decodeFromString(PairingCard.serializer(), it.cardJson)) }.getOrNull() } ?: return
+        kotlin.concurrent.thread(isDaemon = true) {
+            runCatching { relay.send(TeleportCrypto.seal(KIND_PAIR_NO, "{}".toByteArray(), signing, peer.kaBytes), peer) }
+        }
     }
 
     fun remove(peerId: String) {
@@ -162,7 +170,7 @@ class Teleport(
 
         // Everything else must come from a paired device (or, for pair-ok, one we scanned).
         val known = store.peers[env.from]
-        val pending = if (env.k == KIND_PAIR_OK) store.pendingOutbound[env.from] else null
+        val pending = if (env.k == KIND_PAIR_OK || env.k == KIND_PAIR_NO) store.pendingOutbound[env.from] else null
         val peer = known ?: pending ?: throw OpenException("peer")
         val pt = TeleportCrypto.open(env, agreement, peer.ksBytes)
         if (!store.markSeen(env.id)) throw OpenException("replay")
@@ -191,6 +199,11 @@ class Teleport(
                 store.peers = store.peers + (confirmed.id to confirmed)
                 store.pendingOutbound = store.pendingOutbound - confirmed.id
                 Received.Paired(confirmed)
+            }
+            KIND_PAIR_NO -> {
+                if (pending == null || known != null) throw OpenException("kind")
+                store.pendingOutbound = store.pendingOutbound - pending.id
+                Received.Declined(pending)
             }
             else -> throw OpenException("kind")
         }

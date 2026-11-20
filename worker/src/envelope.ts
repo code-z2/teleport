@@ -5,7 +5,7 @@ export interface Envelope {
   v: 1;
   id: string;
   ts: number;
-  k: "text" | "blob" | "peer" | "pair" | "pair-ok";
+  k: "text" | "blob" | "peer" | "pair" | "pair-ok" | "pair-no";
   from: string;
   epk: string;
   n: string;
@@ -14,7 +14,7 @@ export interface Envelope {
 }
 
 export const MAX_ENVELOPE_BYTES = 3000;
-export const KINDS: readonly Envelope["k"][] = ["text", "blob", "peer", "pair", "pair-ok"];
+export const KINDS: readonly Envelope["k"][] = ["text", "blob", "peer", "pair", "pair-ok", "pair-no"];
 
 const b64u = (len?: number) => (s: unknown) =>
   typeof s === "string" && /^[A-Za-z0-9_-]*$/.test(s) && (len === undefined || s.length === len);

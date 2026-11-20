@@ -82,6 +82,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.util.Date
 
@@ -195,12 +196,12 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 items(peers, key = { it.id }) { peer ->
-                    val isMac = peer.platform == "mac"
+                    val isMac = peer.hasMailbox  // a Mac or Windows PC: browsable
                     ListItem(
                         headlineContent = { Text(peer.name) },
                         supportingContent = {
                             Text(
-                                if (isMac) "Mac · tap to browse files"
+                                if (isMac) "${platformLabel(peer.platform)} · tap to browse files"
                                 else "${platformLabel(peer.platform)} · paired ${DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(peer.pairedAt))}",
                             )
                         },
@@ -335,6 +336,16 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun PairingCodeSheet() {
+        // A code is single-use and lasts 10 minutes: swap in a fresh one as soon as it's
+        // spent (someone scanned it) or expired, so the QR shown always works.
+        LaunchedEffect(Unit) {
+            while (true) {
+                kotlinx.coroutines.delay(1000)
+                if (qrCode != null && withContext(Dispatchers.IO) { teleport.store.currentPairingSecret() } == null) {
+                    qrCode = withContext(Dispatchers.IO) { teleport.qrCode(name) }
+                }
+            }
+        }
         ModalBottomSheet(
             onDismissRequest = { showingQr = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -524,11 +535,13 @@ private fun Modifier.groupedItem() = padding(horizontal = 16.dp, vertical = 2.dp
 private fun platformLabel(platform: String) = when (platform) {
     "ios" -> "iPhone"
     "mac" -> "Mac"
+    "windows" -> "Windows PC"
     else -> "Android"
 }
 
 private fun platformIcon(platform: String) = when (platform) {
     "ios" -> R.drawable.ic_sym_phone_iphone
     "mac" -> R.drawable.ic_sym_laptop_mac
+    "windows" -> R.drawable.ic_sym_desktop_windows
     else -> R.drawable.ic_sym_android
 }

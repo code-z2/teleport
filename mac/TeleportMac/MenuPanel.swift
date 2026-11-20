@@ -237,6 +237,7 @@ extension Platform {
         case .ios: "iphone"
         case .android: "candybarphone"
         case .mac: "laptopcomputer"
+        case .windows: "pc"
         }
     }
 }

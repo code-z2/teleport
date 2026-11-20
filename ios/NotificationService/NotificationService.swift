@@ -69,6 +69,8 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
                     category: "PAIR")
             case .paired(let peer):
                 return Rendered(title: "Paired with \(peer.name)", body: "You can now teleport between the two.", category: "")
+            case .declined(let peer):
+                return Rendered(title: "\(peer.name) declined", body: "Pairing wasn't allowed. Scan a new code to try again.", category: "")
             case .peerUpdated(let peer):
                 return Rendered(title: "Teleport", body: "\(peer.name) updated", category: "")
             }

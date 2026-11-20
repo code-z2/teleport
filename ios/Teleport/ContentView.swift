@@ -8,6 +8,7 @@ import VisionKit
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var teleport: Teleport? = try? Teleport()
+    @State private var clipboardRequest = ClipboardSendRequest.shared
     @State private var name = ""
     @State private var peers: [Peer] = []
     @State private var requests: [PairRequest] = []
@@ -47,7 +48,7 @@ struct ContentView: View {
 
                     Section {
                         ForEach(peers) { peer in
-                            if peer.platform == .mac {
+                            if peer.platform.hasMailbox {
                                 // A Mac's files can be browsed over an end-to-end encrypted session.
                                 NavigationLink {
                                     MacBrowserRoot(teleport: teleport, mac: peer)
@@ -102,6 +103,10 @@ struct ContentView: View {
             }
             .onChange(of: scenePhase) { _, phase in if phase == .active { reload() } }
             .onReceive(NotificationCenter.default.publisher(for: .teleportPushStateChanged)) { _ in reload() }
+            // From the Control Center button (or Siri / Shortcuts): send what's on the clipboard.
+            .sheet(isPresented: $clipboardRequest.pending) {
+                ClipboardSendSheet { clipboardRequest.pending = false }
+            }
             .sheet(isPresented: $showingQR) {
                 if let teleport { PairingCodeSheet(teleport: teleport, name: name) }
             }
@@ -192,6 +197,14 @@ struct PairingCodeSheet: View {
             .navigationTitle(name)
             .toolbar { Button("Done") { dismiss() } }
             .onAppear(perform: makeCode)
+            // A code is single-use and lasts 10 minutes: swap in a fresh one as soon as
+            // it's spent (someone scanned it) or expired, so the QR shown always works.
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    if code != nil, teleport.store.currentPairingSecret == nil { makeCode() }
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .teleportPushStateChanged)) { _ in
                 if code == nil { makeCode() }
                 // Someone scanned us: close so the Allow prompt in the list is visible.
@@ -212,6 +225,7 @@ extension Platform {
         case .ios: "iPhone"
         case .android: "Android"
         case .mac: "Mac"
+        case .windows: "Windows PC"
         }
     }
 
@@ -220,6 +234,7 @@ extension Platform {
         case .ios: "iphone"
         case .android: "candybarphone"
         case .mac: "laptopcomputer"
+        case .windows: "pc"
         }
     }
 }

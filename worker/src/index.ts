@@ -56,7 +56,8 @@ async function handleSend(req: Request, env: Env): Promise<Response> {
   }
   const to = body.to;
   // Macs are reached through their mailbox (a live connection), not push.
-  if (to?.platform === "mac") {
+  // Computers (Mac, Windows) are reached through their mailbox, not push.
+  if (to?.platform === "mac" || to?.platform === "windows") {
     if (typeof to.mailbox !== "string" || !MAILBOX_ID.test(to.mailbox)) return err(400, "invalid to.mailbox");
     const envelope = parseEnvelope(body.env);
     if (typeof envelope === "string") return err(400, envelope);

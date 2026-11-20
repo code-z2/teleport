@@ -49,6 +49,7 @@
         }, {
           "path": "SendPicker.swift",
           "target-membership": [
+            "Teleport/compile-sources",
             "TeleportAction/compile-sources",
             "TeleportShare/compile-sources",
           ],
@@ -93,6 +94,12 @@
             "Teleport/compile-sources",
             "TeleportLiveActivity/compile-sources",
           ],
+        }, {
+          "path": "ClipboardControl.swift",
+          "target-membership": [
+            "Teleport/compile-sources",
+            "TeleportLiveActivity/compile-sources",
+          ],
         },
       ],
     }, {
@@ -114,6 +121,7 @@
       "path": "Teleport",
       "children": [
         { "path": "AppIcon.icon", "target-membership": [ "Teleport/resources" ] },
+        { "path": "ClipboardSend.swift", "target-membership": [ "Teleport/compile-sources" ] },
         { "path": "ContentView.swift", "target-membership": [ "Teleport/compile-sources" ] },
         { "path": "FilePreview.swift", "target-membership": [ "Teleport/compile-sources" ] },
         { "path": "GoogleService-Info.plist", "target-membership": [ "Teleport/resources" ] },

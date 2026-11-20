@@ -39,6 +39,7 @@ enum ShareSuggestion {
         case .ios: "iphone"
         case .android: "candybarphone"
         case .mac: "laptopcomputer"
+        case .windows: "pc"
         }
         let png = UIGraphicsImageRenderer(size: size).pngData { _ in
             UIColor(red: 0.31, green: 0.27, blue: 0.90, alpha: 1).setFill()

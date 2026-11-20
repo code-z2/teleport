@@ -5,8 +5,8 @@ const subtle = globalThis.crypto.subtle;
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-export type Kind = "text" | "blob" | "peer" | "pair" | "pair-ok";
-export const KINDS: readonly Kind[] = ["text", "blob", "peer", "pair", "pair-ok"];
+export type Kind = "text" | "blob" | "peer" | "pair" | "pair-ok" | "pair-no";
+export const KINDS: readonly Kind[] = ["text", "blob", "peer", "pair", "pair-ok", "pair-no"];
 export const MAX_ENVELOPE_BYTES = 3000;
 
 export interface Envelope {

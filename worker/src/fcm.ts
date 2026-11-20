@@ -24,6 +24,7 @@ const ALERT_BODY: Record<Envelope["k"], string> = {
   peer: "Device updated",
   pair: "Pairing request",
   "pair-ok": "Paired",
+  "pair-no": "Pairing declined",
 };
 
 // ---------- messages ----------

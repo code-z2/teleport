@@ -6,6 +6,7 @@ public struct Envelope: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case text, blob, peer, pair
         case pairOK = "pair-ok"
+        case pairNo = "pair-no"
     }
 
     public var v: Int
