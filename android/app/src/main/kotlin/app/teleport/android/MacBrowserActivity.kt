@@ -3,6 +3,7 @@ package app.teleport.android
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
@@ -27,7 +28,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -94,8 +94,9 @@ class MacBrowserActivity : ComponentActivity() {
     private var error by mutableStateOf<String?>(null)
     private var message by mutableStateOf<Pair<String, Long>?>(null)
     private val transfers = mutableStateListOf<Transfer>()
-    /** The file waiting for "Download?" confirmation: tapping never downloads straight away. */
-    private var confirming by mutableStateOf<FileEntry?>(null)
+    /** The file being previewed (file → preview → save); null shows the folder. */
+    private var previewing by mutableStateOf<PreviewState?>(null)
+    private val previewCache get() = java.io.File(cacheDir, "previews")
 
     class Transfer(val name: String, val upload: Boolean) {
         var done by mutableStateOf(0L)
@@ -112,6 +113,7 @@ class MacBrowserActivity : ComponentActivity() {
         val peer = intent.getStringExtra(EXTRA_PEER)?.let { teleport.store.peers[it] }
         if (peer == null || peer.platform != "mac") { finish(); return }
         mac = peer
+        previewCache.deleteRecursively()  // previews are temporary
         setContent { TeleportTheme { Screen() } }
         load("")
     }
@@ -175,40 +177,71 @@ class MacBrowserActivity : ComponentActivity() {
 
     // ---------- transfers ----------
 
-    /** Saves into Download/Teleport via MediaStore: visible in Files, no storage permission needed. */
-    private fun download(entry: FileEntry) {
-        val t = Transfer(entry.name, upload = false).also { it.total = entry.size }
-        transfers.add(0, t)
-        val source = child(entry.name)
-        t.job = lifecycleScope.launch {
-            val resolver = contentResolver
-            val item = withContext(Dispatchers.IO) {
-                resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, ContentValues().apply {
-                    put(MediaStore.Downloads.DISPLAY_NAME, entry.name)
-                    put(MediaStore.Downloads.RELATIVE_PATH, "Download/Teleport")
-                    put(MediaStore.Downloads.IS_PENDING, 1)
-                })
-            }
-            if (item == null) { t.state = "failed"; t.detail = "Couldn't create the file."; return@launch }
+    // ---------- preview ----------
+
+    private fun openPreview(entry: FileEntry) {
+        val state = PreviewState(entry, child(entry.name))
+        previewing = state
+        lifecycleScope.launch {
+            val jpeg = runCatching { withSession { it.thumbnail(state.path, 600) } }.getOrNull()
+            if (jpeg != null) state.thumbnail = withContext(Dispatchers.IO) { BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) }
+        }
+        when {
+            state.kind == PreviewKind.NONE -> state.phase = "unsupported"
+            entry.size > PreviewState.AUTO_PREVIEW_LIMIT -> state.phase = "thumb"
+            else -> fetch(state)
+        }
+    }
+
+    private fun closePreview() {
+        previewing?.job?.cancel()
+        previewing = null
+    }
+
+    /** Streams the whole file into the preview cache once, then runs [then]. */
+    private fun fetch(state: PreviewState, then: (java.io.File) -> Unit = {}) {
+        state.file?.let { return then(it) }
+        if (state.job?.isActive == true) return
+        val before = state.phase
+        state.phase = "loading"; state.progress = 0f
+        state.job = lifecycleScope.launch {
+            val dest = java.io.File(previewCache, java.util.UUID.randomUUID().toString()).also { it.mkdirs() }.let { java.io.File(it, state.entry.name) }
             val scope = coroutineContext
             try {
-                val mime = withSession { s ->
-                    resolver.openOutputStream(item)!!.use { out ->
-                        s.download(source, out, cancelled = { !scope.isActive }) { d, total -> t.done = d; if (total > 0) t.total = total }
+                withSession { s ->
+                    dest.outputStream().use { out ->
+                        s.download(state.path, out, cancelled = { !scope.isActive }) { d, total ->
+                            val t = if (total > 0) total else state.entry.size
+                            if (t > 0) state.progress = d.toFloat() / t
+                        }
                     }
                 }
-                withContext(Dispatchers.IO) {
-                    resolver.update(item, ContentValues().apply {
-                        put(MediaStore.Downloads.IS_PENDING, 0)
-                        put(MediaStore.Downloads.MIME_TYPE, mime)
-                    }, null, null)
-                }
-                t.uri = item
-                t.state = "done"
+                state.file = dest
+                state.phase = if (state.kind == PreviewKind.NONE) "unsupported" else "ready"
+                then(dest)
             } catch (e: Exception) {
-                withContext(Dispatchers.IO + kotlinx.coroutines.NonCancellable) { resolver.delete(item, null, null) }
-                if (e is CancellationException) t.state = "cancelled" else { t.state = "failed"; t.detail = e.message }
+                dest.delete()
+                if (e is CancellationException) { state.phase = before } else { state.phase = "failed"; state.error = e.message }
             }
+        }
+    }
+
+    /** Copies the previewed file into Download/Teleport (MediaStore: no storage permission). */
+    private fun save(state: PreviewState) = fetch(state) { file ->
+        lifecycleScope.launch {
+            val uri = withContext(Dispatchers.IO) {
+                runCatching {
+                    val item = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, ContentValues().apply {
+                        put(MediaStore.Downloads.DISPLAY_NAME, state.entry.name)
+                        put(MediaStore.Downloads.RELATIVE_PATH, "Download/Teleport")
+                        put(MediaStore.Downloads.IS_PENDING, 1)
+                    })!!
+                    contentResolver.openOutputStream(item)!!.use { out -> file.inputStream().use { it.copyTo(out) } }
+                    contentResolver.update(item, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+                    item
+                }.getOrNull()
+            }
+            message = (if (uri != null) "Saved to Download/Teleport" else "Couldn't save ${state.entry.name}") to System.nanoTime()
         }
     }
 
@@ -247,33 +280,18 @@ class MacBrowserActivity : ComponentActivity() {
         return (uri.lastPathSegment ?: "file") to 0L
     }
 
-    private fun openDownloaded(t: Transfer) {
-        val uri = t.uri ?: return
-        val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, contentResolver.getType(uri)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        runCatching { startActivity(Intent.createChooser(view, t.name)) }
-            .onFailure { message = "No app can open ${t.name}" to System.nanoTime() }
-    }
-
     // ---------- UI ----------
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun Screen() {
+        val preview = previewing
+        if (preview != null) return PreviewScreen(preview)
         val snackbar = remember { SnackbarHostState() }
         val scroll = TopAppBarDefaults.pinnedScrollBehavior()
         val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { if (it.isNotEmpty()) upload(it) }
         LaunchedEffect(message) { message?.let { snackbar.showSnackbar(it.first) } }
         BackHandler(enabled = path.isNotEmpty()) { load(parent(path)) }
-        confirming?.let { entry ->
-            AlertDialog(
-                onDismissRequest = { confirming = null },
-                icon = { SymbolIcon(R.drawable.ic_sym_download, tint = MaterialTheme.colorScheme.primary) },
-                title = { Text("Download “${entry.name}”?") },
-                text = { Text("${Formatter.formatShortFileSize(this, entry.size)} from ${mac.name} to Download/Teleport on this phone.") },
-                confirmButton = { TextButton(onClick = { confirming = null; download(entry) }) { Text("Download") } },
-                dismissButton = { TextButton(onClick = { confirming = null }) { Text("Cancel") } },
-            )
-        }
 
         Scaffold(
             modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
@@ -346,6 +364,31 @@ class MacBrowserActivity : ComponentActivity() {
         }
     }
 
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun PreviewScreen(state: PreviewState) {
+        val snackbar = remember { SnackbarHostState() }
+        LaunchedEffect(message) { message?.let { snackbar.showSnackbar(it.first) } }
+        BackHandler { closePreview() }
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text(state.entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    navigationIcon = { IconButton(onClick = ::closePreview) { SymbolIcon(R.drawable.ic_sym_arrow_back, "Back") } },
+                    actions = {
+                        TextButton(onClick = { save(state) }, enabled = state.phase != "loading") {
+                            SymbolIcon(R.drawable.ic_sym_download, tint = MaterialTheme.colorScheme.primary, size = 20)
+                            Text("  Save")
+                        }
+                    },
+                )
+            },
+            snackbarHost = { SnackbarHost(snackbar) },
+        ) { padding ->
+            PreviewBody(state, onLoad = { fetch(state) }, contentPadding = padding)
+        }
+    }
+
     @Composable
     private fun EntryRow(entry: FileEntry) {
         val modified = DateUtils.getRelativeTimeSpanString(entry.mtime * 1000, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS)
@@ -360,9 +403,8 @@ class MacBrowserActivity : ComponentActivity() {
                     tint = if (entry.dir) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             },
-            trailingContent = { if (!entry.dir) SymbolIcon(R.drawable.ic_sym_download, "Download") },
             colors = grouped(),
-            modifier = Modifier.groupedRow().clickable { if (entry.dir) load(child(entry.name)) else confirming = entry },
+            modifier = Modifier.groupedRow().clickable { if (entry.dir) load(child(entry.name)) else openPreview(entry) },
         )
     }
 
@@ -393,7 +435,7 @@ class MacBrowserActivity : ComponentActivity() {
                 }
             },
             colors = grouped(),
-            modifier = Modifier.groupedRow().clickable(enabled = t.state == "done" && !t.upload) { openDownloaded(t) },
+            modifier = Modifier.groupedRow(),
         )
     }
 

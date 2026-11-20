@@ -129,6 +129,8 @@ public struct Control: Codable, Sendable {
     public var name: String?
     public var dir: String?
     public var bytes: Int64?
+    /// `thumbnail`: longest side in pixels.
+    public var px: Int?
     public var entries: [FileEntry]?
     public var code: String?
     public var message: String?

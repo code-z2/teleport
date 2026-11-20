@@ -17,12 +17,11 @@ final class MacConnection {
     init(teleport: Teleport, mac: Peer) {
         self.teleport = teleport
         self.mac = mac
+        try? FileManager.default.removeItem(at: Self.previewCache)
     }
 
-    /// Downloads land here, which the Files app shows as On My iPhone ▸ Teleport ▸ <Mac name>.
-    var downloadsFolder: URL {
-        URL.documentsDirectory.appending(path: mac.name.replacingOccurrences(of: "/", with: "-"), directoryHint: .isDirectory)
-    }
+    /// Full files fetched for previews. Temporary: cleared each time a Mac's files are opened.
+    static var previewCache: URL { URL.cachesDirectory.appending(path: "Previews", directoryHint: .isDirectory) }
 
     private func session() async throws -> FileSessionClient {
         if let client { return client }
@@ -84,25 +83,6 @@ final class MacConnection {
     }
 
     // MARK: Transfers
-
-    func download(_ path: String, entry: FileEntry) -> Transfer {
-        let t = Transfer(name: entry.name, upload: false, total: entry.size)
-        transfers.insert(t, at: 0)
-        let folder = downloadsFolder
-        t.task = Task {
-            do {
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                let dest = folder.appending(path: entry.name)
-                try await run { try await $0.download(path, to: dest) { d, total in Task { @MainActor in t.progress(d, total) } } }
-                t.state = .finished(dest)
-            } catch is CancellationError {
-                t.state = .cancelled
-            } catch {
-                t.state = .failed(error.localizedDescription)
-            }
-        }
-        return t
-    }
 
     func upload(_ file: URL, name: String, to dir: String, onSaved: @escaping @MainActor () -> Void) {
         let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
@@ -184,8 +164,6 @@ struct MacBrowserView: View {
     @State private var importing = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var sharing: URL?
-    /// The file waiting for "Download?" confirmation (tapping never downloads straight away).
-    @State private var confirming: (path: String, entry: FileEntry)?
 
     private var title: String {
         path.isEmpty ? connection.mac.name : (path as NSString).lastPathComponent
@@ -245,17 +223,6 @@ struct MacBrowserView: View {
             for item in items { uploadFromPhotos(item) }
         }
         .sheet(item: $sharing) { url in ShareSheet(items: [url]).ignoresSafeArea() }
-        .confirmationDialog(
-            confirming.map { "Download “\($0.entry.name)”?" } ?? "",
-            isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
-            titleVisibility: .visible,
-            presenting: confirming
-        ) { item in
-            Button("Download (\(item.entry.size.formatted(.byteCount(style: .file))))") { open(item.path, item.entry) }
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("From \(connection.mac.name) to this iPhone.")
-        }
     }
 
     @ViewBuilder
@@ -268,8 +235,8 @@ struct MacBrowserView: View {
                 Label(entry.name, systemImage: "folder.fill")
             }
         } else {
-            Button {
-                confirming = (child, entry)
+            NavigationLink {
+                FilePreviewView(connection: connection, path: child, entry: entry)
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: Self.symbol(for: entry.name))
@@ -280,13 +247,8 @@ struct MacBrowserView: View {
                         Text("\(entry.size.formatted(.byteCount(style: .file))) · \(Date(timeIntervalSince1970: TimeInterval(entry.mtime)).formatted(date: .abbreviated, time: .shortened))")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Spacer()
-                    Image(systemName: "arrow.down.circle").foregroundStyle(.secondary)
                 }
-                .contentShape(Rectangle())
             }
-            // Plain, so the row reads as a neutral list item rather than tinted button text.
-            .buttonStyle(.plain)
         }
     }
 
@@ -309,22 +271,6 @@ struct MacBrowserView: View {
             error = nil
         } catch {
             self.error = error.localizedDescription
-        }
-    }
-
-    /// Downloads (or reuses an identical earlier download), then offers Share / Save to Files / Save to Photos.
-    private func open(_ path: String, _ entry: FileEntry) {
-        let existing = connection.downloadsFolder.appending(path: entry.name)
-        if let size = try? existing.resourceValues(forKeys: [.fileSizeKey]).fileSize, Int64(size) == entry.size,
-           let mtime = try? existing.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
-           mtime.timeIntervalSince1970 >= TimeInterval(entry.mtime) {
-            sharing = existing
-            return
-        }
-        let t = connection.download(path, entry: entry)
-        Task {
-            await t.task?.value
-            if case .finished(let url?) = t.state { sharing = url }
         }
     }
 

@@ -1,4 +1,6 @@
 import CryptoKit
+import CoreGraphics
+import ImageIO
 import Foundation
 import Testing
 @testable import TeleportCore
@@ -230,4 +232,26 @@ private final class Counter: @unchecked Sendable {
     private var v: Int64 = 0
     var value: Int64 { lock.withLock { v } }
     func set(_ x: Int64) { lock.withLock { v = x } }
+}
+
+@Test func thumbnailOfAnImage() async throws {
+    let f = try Fixture()
+    // A 64×48 PNG drawn with ImageIO.
+    let ctx = CGContext(data: nil, width: 64, height: 48, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.setFillColor(red: 0.2, green: 0.5, blue: 0.9, alpha: 1)
+    ctx.fill(CGRect(x: 0, y: 0, width: 64, height: 48))
+    let png = NSMutableData()
+    let dest = CGImageDestinationCreateWithData(png, "public.png" as CFString, 1, nil)!
+    CGImageDestinationAddImage(dest, ctx.makeImage()!, nil)
+    #expect(CGImageDestinationFinalize(dest))
+    try (png as Data).write(to: f.home.appending(path: "Documents/pic.png"))
+
+    let (client, _) = try await f.connect()
+    let thumb = try #require(try await client.thumbnail("Documents/pic.png", px: 128))
+    #expect(thumb.prefix(2) == Data([0xFF, 0xD8]))  // JPEG
+    // Folders and hidden files: no thumbnail / refused.
+    #expect(try await client.thumbnail("Documents") == nil)
+    await #expect(throws: FileSessionError.self) { _ = try await client.thumbnail(".ssh/id_ed25519") }
+    await client.close()
 }

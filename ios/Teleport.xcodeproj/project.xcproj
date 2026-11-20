@@ -115,6 +115,7 @@
       "children": [
         { "path": "AppIcon.icon", "target-membership": [ "Teleport/resources" ] },
         { "path": "ContentView.swift", "target-membership": [ "Teleport/compile-sources" ] },
+        { "path": "FilePreview.swift", "target-membership": [ "Teleport/compile-sources" ] },
         { "path": "GoogleService-Info.plist", "target-membership": [ "Teleport/resources" ] },
         { "path": "Info.plist" },
         { "path": "MacBrowser.swift", "target-membership": [ "Teleport/compile-sources" ] },

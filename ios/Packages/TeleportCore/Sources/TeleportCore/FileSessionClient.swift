@@ -203,6 +203,28 @@ public actor FileSessionClient {
         throw failure ?? FileSessionError.closed
     }
 
+    /// A JPEG thumbnail (longest side `px`) rendered by Quick Look on the Mac, or nil
+    /// if the Mac can't preview this kind of file.
+    public func thumbnail(_ path: String, px: Int = 512) async throws -> Data? {
+        let (id, stream) = try begin { var c = Control("thumbnail", id: $0); c.path = path; c.px = px; return c }
+        defer { end(id) }
+        var data = Data()
+        for try await frame in stream {
+            switch frame {
+            case .data(_, let bytes):
+                data.append(bytes)
+            case .control(let c):
+                if c.op == "error" && c.code == "unsupported" { return nil }
+                try Self.check(c)
+                if c.op == "done" {
+                    guard Data(SHA256.hash(data: data)).base64URL == c.sha256 else { throw FileSessionError.hashMismatch }
+                    return data
+                }
+            }
+        }
+        throw failure ?? FileSessionError.closed
+    }
+
     /// Uploads `source` into the Mac folder `dir`. Returns the name the Mac saved it under.
     public func upload(
         _ source: URL, to dir: String, name: String,

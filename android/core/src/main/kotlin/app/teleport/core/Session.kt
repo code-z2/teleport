@@ -65,6 +65,8 @@ data class Control(
     val name: String? = null,
     val dir: String? = null,
     val bytes: Long? = null,
+    /** `thumbnail`: longest side in pixels. */
+    val px: Int? = null,
     val entries: List<FileEntry>? = null,
     val code: String? = null,
     val message: String? = null,
@@ -266,6 +268,31 @@ class FileSessionClient private constructor(private val pipe: SessionPipe, priva
             }
         } finally {
             end(id, cancel = !ok)
+        }
+    }
+
+    /** A JPEG thumbnail rendered by Quick Look on the Mac, or null if it can't preview this file. */
+    fun thumbnail(path: String, px: Int = 512): ByteArray? {
+        val (id, q) = begin { Control("thumbnail", it, path = path, px = px) }
+        try {
+            val out = java.io.ByteArrayOutputStream()
+            while (true) {
+                val f = try { next(q) { false } } catch (e: SessionException) {
+                    if (e.code == "unsupported") return null else throw e
+                }
+                when (f) {
+                    is SessionFrame.Data -> out.write(f.bytes)
+                    is SessionFrame.Ctl -> if (f.c.op == "done") {
+                        val bytes = out.toByteArray()
+                        if (MessageDigest.getInstance("SHA-256").digest(bytes).b64u() != f.c.sha256) {
+                            throw SessionException("hash", "The preview was corrupted in transit.")
+                        }
+                        return bytes
+                    }
+                }
+            }
+        } finally {
+            end(id, cancel = false)
         }
     }
 

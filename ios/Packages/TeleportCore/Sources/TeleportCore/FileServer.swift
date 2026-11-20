@@ -1,6 +1,10 @@
 import CryptoKit
 import Foundation
+import ImageIO
 import UniformTypeIdentifiers
+#if canImport(QuickLookThumbnailing)
+import QuickLookThumbnailing
+#endif
 
 /// The Mac's end of one file session: checks the phone's hello, then serves
 /// list / download / upload inside the home folder (SPEC.md "File sessions").
@@ -116,6 +120,7 @@ public actor FileServer {
             switch c.op {
             case "list": list(c)
             case "download": startDownload(c)
+            case "thumbnail": startThumbnail(c)
             case "upload": startUpload(c)
             case "done": finishUpload(c)
             case "ack":
@@ -260,6 +265,58 @@ public actor FileServer {
                 downloads[id]?.waiter = cont
             }
         }
+    }
+
+    // MARK: Thumbnail
+
+    /// A Quick Look thumbnail as JPEG: `meta`, data, `done`, like a small download.
+    /// Files Quick Look can't render get `error { code: "unsupported" }`.
+    private func startThumbnail(_ c: Control) {
+        let id = c.id
+        let url: URL
+        do {
+            url = try resolve(c.path ?? "")
+            guard (try url.resourceValues(forKeys: [.isDirectoryKey])).isDirectory != true else {
+                return fail(id, "unsupported", "Folders have no preview.")
+            }
+        } catch {
+            return pathError(id, error)
+        }
+        let px = CGFloat(min(max(c.px ?? 512, 64), 1024))
+        Task { [weak self] in
+            let jpeg = await Self.thumbnailJPEG(url, px: px)
+            await self?.sendThumbnail(id, jpeg)
+        }
+    }
+
+    private func sendThumbnail(_ id: UInt32, _ jpeg: Data?) {
+        guard let jpeg else { return fail(id, "unsupported", "No preview for this file.") }
+        var meta = Control("meta", id: id)
+        meta.size = Int64(jpeg.count); meta.mime = "image/jpeg"
+        send(.control(meta))
+        var offset = 0
+        while offset < jpeg.count {
+            let end = min(offset + SessionCrypto.chunkSize, jpeg.count)
+            send(.data(id, jpeg.subdata(in: offset..<end)))
+            offset = end
+        }
+        var done = Control("done", id: id)
+        done.sha256 = Data(SHA256.hash(data: jpeg)).base64URL
+        send(.control(done))
+    }
+
+    static func thumbnailJPEG(_ url: URL, px: CGFloat) async -> Data? {
+        #if canImport(QuickLookThumbnailing)
+        let request = QLThumbnailGenerator.Request(
+            fileAt: url, size: CGSize(width: px, height: px), scale: 1, representationTypes: .thumbnail)
+        guard let rep = try? await QLThumbnailGenerator.shared.generateBestRepresentation(for: request) else { return nil }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, rep.cgImage, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
+        return CGImageDestinationFinalize(dest) ? out as Data : nil
+        #else
+        return nil
+        #endif
     }
 
     // MARK: Upload

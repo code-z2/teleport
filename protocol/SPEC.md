@@ -289,8 +289,9 @@ All paths are relative to the Mac user's home folder, `/`-separated; `""` is hom
 | `{"op":"list","id","path"}` | `{"op":"entries","id","path","entries":[{"name","dir","size","mtime"}]}`, folders first, then by name |
 | `{"op":"download","id","path","offset"?}` | `{"op":"meta","id","size","mime"}`, data frames from `offset`, then `{"op":"done","id","sha256"}` (SHA-256 of the whole file, b64u) |
 | `{"op":"upload","id","dir","name","size"}` | `{"op":"ready","id","name"}` (the final name; a clash becomes `name (2).ext`). The phone sends data frames, then `{"op":"done","id","sha256"}`; the Mac checks the hash, moves the file into place and replies `{"op":"saved","id","name"}` |
+| `{"op":"thumbnail","id","path","px"}` | A Quick Look thumbnail as JPEG, longest side `px` (64–1024, default 512): `meta` (`mime` `image/jpeg`), data frames, `done`, as for a download but without acks. `{"op":"error","code":"unsupported"}` if the Mac can't render one |
 | `{"op":"cancel","id"}` | Either side may send it. The transfer stops; a cancelled upload leaves no file |
-| | `{"op":"error","id","code","message"}`, `code` ∈ `not_found`, `denied`, `bad_path`, `exists`, `io`, `hash`, `busy` |
+| | `{"op":"error","id","code","message"}`, `code` ∈ `not_found`, `denied`, `bad_path`, `exists`, `io`, `hash`, `busy`, `unsupported` |
 
 **Flow control.** The receiver of data sends `{"op":"ack","id","bytes"}` (total
 bytes received so far) at least every 1 MiB. The sender keeps at most 2 MiB
