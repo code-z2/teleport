@@ -54,7 +54,30 @@ final class MacConnection {
         Task { await c?.close() }
     }
 
-    /// Leaving the Mac's files (the screen is popped and this is released) hangs up.
+    /// Folder screens currently on screen. SwiftUI may keep a popped screen's state alive,
+    /// so hanging up can't wait for this object to be released: when no folder screen has
+    /// been visible for a moment (moving between folders briefly drops to zero), hang up.
+    private var visibleScreens = 0
+    private var hangUp: Task<Void, Never>?
+
+    func screenAppeared() {
+        visibleScreens += 1
+        hangUp?.cancel()
+    }
+
+    func screenDisappeared() {
+        visibleScreens = max(0, visibleScreens - 1)
+        guard visibleScreens == 0 else { return }
+        hangUp?.cancel()
+        hangUp = Task {
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled, visibleScreens == 0,
+                  !transfers.contains(where: { if case .running = $0.state { true } else { false } })
+            else { return }
+            close()
+        }
+    }
+
     isolated deinit {
         let c = client
         Task { await c?.close() }
@@ -209,6 +232,8 @@ struct MacBrowserView: View {
             }
         }
         .refreshable { await load() }
+        .onAppear { connection.screenAppeared() }
+        .onDisappear { connection.screenDisappeared() }
         .task { if entries == nil { await load() } }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             guard case .success(let urls) = result else { return }

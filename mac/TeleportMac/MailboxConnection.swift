@@ -34,6 +34,10 @@ final class MailboxConnection {
     /// Open file sessions, by raw 16-byte sid.
     private var sessions: [Data: SessionEntry] = [:]
     private struct SessionEntry { let pipe: MailboxSessionPipe; var phone: String? }
+    /// Sessions with no traffic for this long are closed, so a phone that vanished without
+    /// hanging up can't stay "browsing". The phone reconnects by itself on its next action.
+    private static let sessionIdleLimit: TimeInterval = 5 * 60
+    private var idleTimer: Timer?
 
     private let teleport: Teleport
     private var task: URLSessionWebSocketTask?
@@ -173,7 +177,22 @@ final class MailboxConnection {
 
     // MARK: File sessions
 
+    private func closeIdleSessions() {
+        for (sid, entry) in sessions where entry.pipe.idleFor > Self.sessionIdleLimit {
+            log.notice("file session idle, closing")
+            entry.pipe.close()
+            sessions[sid] = nil
+        }
+        reportBrowsers()
+        if sessions.isEmpty { idleTimer?.invalidate(); idleTimer = nil }
+    }
+
     private func openSession(_ sid: Data, _ task: URLSessionWebSocketTask) {
+        if idleTimer == nil {
+            idleTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.closeIdleSessions() }
+            }
+        }
         let pipe = MailboxSessionPipe(sid: sid, task: task)
         sessions[sid] = SessionEntry(pipe: pipe, phone: nil)
         let teleport = teleport
@@ -262,7 +281,14 @@ final class MailboxSessionPipe: SessionPipe, @unchecked Sendable {
         (incoming, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
     }
 
-    func deliver(_ data: Data) { continuation.yield(data) }
+    private var lastActivity = Date()
+    /// Seconds since the last frame either way.
+    var idleFor: TimeInterval { lock.withLock { Date().timeIntervalSince(lastActivity) } }
+
+    func deliver(_ data: Data) {
+        lock.withLock { lastActivity = Date() }
+        continuation.yield(data)
+    }
 
     /// The phone went away (or the mailbox connection did).
     func finish() {
@@ -271,7 +297,7 @@ final class MailboxSessionPipe: SessionPipe, @unchecked Sendable {
     }
 
     func send(_ data: Data) {
-        guard !lock.withLock({ closed }) else { return }
+        guard !lock.withLock({ lastActivity = Date(); return closed }) else { return }
         task.send(.data(sid + data)) { _ in }
     }
 
