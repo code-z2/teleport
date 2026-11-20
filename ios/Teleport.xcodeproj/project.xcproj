@@ -27,7 +27,6 @@
       "kind": "group",
       "path": "ActionExtension",
       "children": [
-        { "path": "ActionRequestHandler.swift", "target-membership": [ "TeleportAction/compile-sources" ] },
         { "path": "Info.plist" },
         { "path": "TeleportAction.entitlements" },
       ],
@@ -43,6 +42,12 @@
       "children": [
         {
           "path": "ClipExtractor.swift",
+          "target-membership": [
+            "TeleportAction/compile-sources",
+            "TeleportShare/compile-sources",
+          ],
+        }, {
+          "path": "SendPicker.swift",
           "target-membership": [
             "TeleportAction/compile-sources",
             "TeleportShare/compile-sources",
@@ -95,7 +100,13 @@
       "path": "ShareExtension",
       "children": [
         { "path": "Info.plist" },
-        { "path": "ShareViewController.swift", "target-membership": [ "TeleportShare/compile-sources" ] },
+        {
+          "path": "ShareViewController.swift",
+          "target-membership": [
+            "TeleportAction/compile-sources",
+            "TeleportShare/compile-sources",
+          ],
+        },
         { "path": "TeleportShare.entitlements" },
       ],
     }, {

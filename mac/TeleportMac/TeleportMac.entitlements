@@ -5,6 +5,10 @@
 	<!-- Not sandboxed: file sessions (phase 5) need the whole home folder.
 	     The keychain group gives the app an application identifier, which the Secure Enclave
 	     and the modern keychain need on macOS. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)$(TELEPORT_BUNDLE_ID).mac</string>
+	</array>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)$(TELEPORT_BUNDLE_ID).mac</string>

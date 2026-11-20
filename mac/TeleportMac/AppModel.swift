@@ -33,6 +33,7 @@ final class AppModel {
         defaults.register(defaults: ["keepAwake": true, "saveImages": true])
         keepAwakeOnPower = defaults.bool(forKey: "keepAwake")
         saveImages = defaults.bool(forKey: "saveImages")
+        Self.migrateStore()
         do {
             let teleport = try Teleport(config: .fromBundle(), platform: .mac)
             self.teleport = teleport
@@ -53,6 +54,18 @@ final class AppModel {
         connection?.onEnvelope = { [weak self] env in self?.receive(env) }
         connection?.start()
         reload()
+    }
+
+    /// Before the Share extension, settings lived in a store only the app could read. Copy
+    /// them once into the App Group store the extension shares, so pairings carry over.
+    private static func migrateStore() {
+        let config = TeleportConfig.fromBundle()
+        guard let shared = UserDefaults(suiteName: config.appGroup), shared.object(forKey: "peers") == nil,
+              let bundleID = Bundle.main.bundleIdentifier,
+              let old = UserDefaults.standard.persistentDomain(forName: bundleID + ".store")
+        else { return }
+        for (key, value) in old { shared.set(value, forKey: key) }
+        print("Teleport: moved \(old.count) settings into the shared App Group store")
     }
 
     var isOnline: Bool { if case .online = state { true } else { false } }
@@ -165,6 +178,36 @@ final class AppModel {
         }
     }
 
+    /// "Teleport" from the right-click menu (macOS Services): with one device, send at once;
+    /// otherwise pop up the devices by name at the pointer.
+    func teleportSelection(_ clip: Clip?) {
+        guard let clip else {
+            return Notifier.post(title: "Teleport", body: "There's nothing in that selection Teleport can send.")
+        }
+        switch peers.count {
+        case 0: Notifier.post(title: "Teleport", body: "No devices yet. Pair one from the menu bar.")
+        case 1: send(clip, to: peers[0])
+        default: DevicePopup.show(peers) { [weak self] peer in self?.send(clip, to: peer) }
+        }
+    }
+
+    private func send(_ clip: Clip, to peer: Peer) {
+        guard let teleport else { return }
+        Task {
+            do {
+                try await teleport.send(clip, to: peer)
+                activity = "Sent to \(peer.name)"
+                Notifier.post(title: "Sent to \(peer.name)", body: "")
+            } catch RelayError.peerGone {
+                Notifier.post(title: "Teleport", body: "\(peer.name) needs to open Teleport (or re-pair).")
+            } catch RelayError.offline {
+                Notifier.post(title: "Teleport", body: "\(peer.name) is offline.")
+            } catch {
+                Notifier.post(title: "Teleport", body: "Couldn't send to \(peer.name): \(error.localizedDescription)")
+            }
+        }
+    }
+
     // MARK: Settings
 
     func setStartAtLogin(_ on: Bool) {
@@ -211,5 +254,35 @@ enum Notifier {
         content.userInfo["request"] = request.id
         content.sound = .default
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "pair-\(request.id)", content: content, trigger: nil))
+    }
+}
+
+/// A small menu of device names at the pointer, for the right-click "Teleport" Service.
+@MainActor
+enum DevicePopup {
+    private final class Target: NSObject {
+        let action: () -> Void
+        init(_ action: @escaping () -> Void) { self.action = action }
+        @objc func run() { action() }
+    }
+
+    static func show(_ peers: [Peer], pick: @escaping (Peer) -> Void) {
+        let menu = NSMenu()
+        let header = NSMenuItem(title: "Teleport to…", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+        var targets: [Target] = []
+        for peer in peers {
+            let target = Target { pick(peer) }
+            targets.append(target)
+            let item = NSMenuItem(title: peer.name, action: #selector(Target.run), keyEquivalent: "")
+            item.target = target
+            item.image = NSImage(systemSymbolName: peer.platform.symbol, accessibilityDescription: nil)
+            menu.addItem(item)
+        }
+        // A menu bar app must come forward for its menu to take clicks.
+        NSApp.activate()
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        withExtendedLifetime(targets) {}
     }
 }

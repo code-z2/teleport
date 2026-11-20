@@ -32,6 +32,7 @@ final class MailboxConnection {
     private var generation = 0
     private var backoff: TimeInterval = 1
     private var pingTimer: Timer?
+    private var lastHeard = Date()
     private var reconnectWork: DispatchWorkItem?
     private let pathMonitor = NWPathMonitor()
     private var observers: [NSObjectProtocol] = []
@@ -106,6 +107,7 @@ final class MailboxConnection {
                 guard let self, gen == self.generation else { return }
                 switch result {
                 case .success(let message):
+                    self.lastHeard = Date()
                     self.handle(message, task)
                     self.receive(task, gen)
                 case .failure(let error):
@@ -153,10 +155,20 @@ final class MailboxConnection {
         task?.send(.string(text)) { _ in }
     }
 
+    /// Pings every 20 s; the relay answers "pong" even while hibernating. If nothing has come
+    /// back for 50 s the connection is dead (a silently dropped socket never errors), so reconnect.
     private func startPing() {
         pingTimer?.invalidate()
-        pingTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.task?.send(.string("ping")) { _ in } }
+        lastHeard = Date()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if Date().timeIntervalSince(self.lastHeard) > 50 {
+                    log.notice("mailbox: no pong for 50 s, reconnecting")
+                    return self.reconnectNow()
+                }
+                self.task?.send(.string("ping")) { _ in }
+            }
         }
     }
 

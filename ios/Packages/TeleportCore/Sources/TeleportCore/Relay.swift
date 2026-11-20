@@ -33,6 +33,22 @@ public enum RelayError: Error, Sendable {
     case offline   // 503: the Mac isn't connected to its mailbox
 }
 
+extension RelayError: LocalizedError {
+    /// Readable messages instead of "The operation couldn't be completed (RelayError error 0)".
+    public var errorDescription: String? {
+        switch self {
+        case .peerGone: return "The other device's push address expired."
+        case .offline: return "The Mac isn't connected."
+        case .http(0, let detail?): return detail
+        case .http(let status, let body):
+            // The relay answers {"ok":false,"error":"…"}.
+            let reason = body.flatMap { $0.data(using: .utf8) }
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["error"] as? String
+            return "Relay error \(status)" + (reason.map { ": \($0)" } ?? "")
+        }
+    }
+}
+
 public struct RelayClient: Sendable {
     let config: TeleportConfig
     let session: URLSession
@@ -76,6 +92,20 @@ public struct RelayClient: Sendable {
         r.httpBody = try JSONEncoder().encode(Body(to: to, env: env))
         let (data, response) = try await session.data(for: r)
         try check(response, data)
+    }
+
+    /// Whether a Mac is connected to its mailbox right now (for "online" labels in pickers).
+    /// Whether a Mac is connected to its mailbox right now; nil if the relay couldn't be reached.
+    public func isOnline(mailbox: String) async -> Bool? {
+        var r = request("v1/mailbox/\(mailbox)/status", method: "GET")
+        r.timeoutInterval = 15
+        r.cachePolicy = .reloadIgnoringLocalCacheData  // live status, never a cached answer
+        struct Status: Decodable { let online: Bool }
+        guard let (data, response) = try? await session.data(for: r),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let status = try? JSONDecoder().decode(Status.self, from: data)
+        else { return nil }
+        return status.online
     }
 
     public func putBlob(_ ciphertext: Data) async throws -> String {

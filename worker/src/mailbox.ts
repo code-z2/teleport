@@ -74,6 +74,8 @@ export class MacMailbox extends DurableObject<MailboxEnv> {
   private mac(except?: WebSocket): WebSocket | null {
     for (const ws of this.ctx.getWebSockets("mac")) {
       if (ws === except) continue;
+      // A socket that's closing (or closed under us) still shows up here for a while.
+      if (ws.readyState !== WebSocket.OPEN) continue;
       const a = this.attachment(ws);
       if (a?.role === "mac" && a.authed) return ws;
     }
@@ -133,7 +135,13 @@ export class MacMailbox extends DurableObject<MailboxEnv> {
   private deliver(env: Envelope): Response {
     const mac = this.mac();
     if (!mac) return json({ ok: false, error: "offline" }, 503);
-    mac.send(JSON.stringify({ t: "env", env }));
+    try {
+      mac.send(JSON.stringify({ t: "env", env }));
+    } catch {
+      // The connection died between the check and the send: it's gone, and so is the Mac.
+      MacMailbox.close(mac, 1011, "dead");
+      return json({ ok: false, error: "offline" }, 503);
+    }
     return json({ ok: true });
   }
 

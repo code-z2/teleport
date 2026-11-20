@@ -33,13 +33,11 @@
 				<key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
 				<integer>1</integer>
 			</dict>
-			<key>NSExtensionServiceRoleType</key>
-			<string>NSExtensionServiceRoleTypeEditor</string>
 		</dict>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.ui-services</string>
 		<key>NSExtensionPrincipalClass</key>
-		<string>$(PRODUCT_MODULE_NAME).ActionRequestHandler</string>
+		<string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
 	</dict>
 	<key>TeleportAppGroup</key>
 	<string>group.$(TELEPORT_BUNDLE_ID)</string>

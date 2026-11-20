@@ -18,12 +18,29 @@ struct TeleportMacApp: App {
     }
 }
 
+/// Receives the right-click "Teleport" Service. The method name matches NSMessage in Info.plist.
+@MainActor
+final class ServicesProvider: NSObject {
+    let model: AppModel
+    init(model: AppModel) { self.model = model }
+
+    @objc func teleport(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        // The selection's pasteboard is only valid during this call: read it now.
+        model.teleportSelection(Pasteboard.read(pasteboard))
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let model = AppModel()
 
+    private lazy var services = ServicesProvider(model: model)
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         Notifier.setUp(delegate: self)
+        // "Teleport" in right-click menus (NSServices in Info.plist).
+        NSApp.servicesProvider = services
+        NSUpdateDynamicServices()
     }
 
     nonisolated func userNotificationCenter(

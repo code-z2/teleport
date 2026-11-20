@@ -7,7 +7,35 @@
 	<string>$(TELEPORT_RELAY_URL)</string>
 	<key>TeleportRelayKey</key>
 	<string>$(TELEPORT_RELAY_KEY)</string>
+	<!-- Shared with the Share extension (macOS app groups are team-prefixed). -->
 	<key>TeleportAppGroup</key>
-	<string>$(TELEPORT_BUNDLE_ID).mac.store</string>
+	<string>$(AppIdentifierPrefix)$(TELEPORT_BUNDLE_ID).mac</string>
+	<key>TeleportKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)$(TELEPORT_BUNDLE_ID).mac</string>
+	<!-- Right-click → Services → "Teleport": pops up your devices by name. -->
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Teleport</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>teleport</string>
+			<key>NSPortName</key>
+			<string>Teleport</string>
+			<key>NSSendTypes</key>
+			<array>
+				<string>public.utf8-plain-text</string>
+				<string>public.url</string>
+				<string>public.png</string>
+				<string>public.tiff</string>
+			</array>
+			<!-- An (empty) required context makes the service enabled by default. -->
+			<key>NSRequiredContext</key>
+			<dict/>
+		</dict>
+	</array>
 </dict>
 </plist>

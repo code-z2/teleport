@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- macOS requires extensions to be sandboxed. The App Group and keychain group are
+	     shared with the menu bar app, so the extension sees the same keys and devices. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)$(TELEPORT_BUNDLE_ID).mac</string>
+	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)$(TELEPORT_BUNDLE_ID).mac</string>
+	</array>
+</dict>
+</plist>

@@ -41,14 +41,24 @@
       ],
     }, {
       "kind": "group",
+      "path": "ShareExtension",
+      "children": [
+        { "path": "Info.plist" },
+        { "path": "ShareViewController.swift", "target-membership": [ "TeleportShare/compile-sources" ] },
+        { "path": "TeleportShare.entitlements" },
+      ],
+    }, {
+      "kind": "group",
       "name": "Shared with iOS",
       "children": [
+        { "path": "<PROJECT>/../ios/ExtensionSupport/SendPicker.swift", "target-membership": [ "TeleportShare/compile-sources" ] },
         { "path": "<PROJECT>/../ios/Teleport/AppIcon.icon", "target-membership": [ "Teleport/resources" ] },
       ],
     }, {
       "kind": "group",
       "name": "Products",
       "children": [
+        { "path": "<PRODUCTS>/TeleportShare.appex", "id": "40AA5D9E111647DDCEB13E2F", "type": "wrapper.app-extension", "index": false, "target-membership": [ { "build-phase": "Teleport/copy/Embed Foundation Extensions", "header-preservation": "remove-on-copy" } ] },
         { "path": "<PRODUCTS>/Teleport.app", "id": "C53AA45C1B689668A9362632", "type": "wrapper.application", "index": false },
       ],
     },
@@ -61,10 +71,18 @@
       "product-type": "application",
       "legacy-provisioning-style": "automatic",
       "legacy-team-id": "$(TELEPORT_TEAM_ID)",
+      "dependencies": [
+        "TeleportShare",
+      ],
       "build-phases": [
         "compile-sources",
         "resources",
         "frameworks",
+        {
+          "kind": "copy",
+          "name": "Embed Foundation Extensions",
+          "bundle-base-path": "plugins-directory",
+        },
       ],
       "package-product-members": [
         {
@@ -87,6 +105,36 @@
           "@executable_path/../Frameworks",
         ],
         "PRODUCT_BUNDLE_IDENTIFIER": "$(TELEPORT_BUNDLE_ID).mac",
+      },
+    }, {
+      "name": "TeleportShare",
+      "id": "6FC86CD686BF00D7FDA40070",
+      "product": "Products/TeleportShare.appex",
+      "product-type": "app-extension",
+      "legacy-provisioning-style": "automatic",
+      "legacy-team-id": "$(TELEPORT_TEAM_ID)",
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+      ],
+      "package-product-members": [
+        {
+          "product-name": "TeleportCore",
+          "build-phase": { "build-phase": "frameworks" },
+        },
+      ],
+      "build-settings": {
+        "CODE_SIGN_ENTITLEMENTS": "ShareExtension/TeleportShare.entitlements",
+        "ENABLE_HARDENED_RUNTIME": "YES",
+        "GENERATE_INFOPLIST_FILE": "YES",
+        "INFOPLIST_FILE": "ShareExtension/Info.plist",
+        "LD_RUNPATH_SEARCH_PATHS": [
+          "$(inherited)",
+          "@executable_path/../Frameworks",
+          "@executable_path/../../../../Frameworks",
+        ],
+        "PRODUCT_BUNDLE_IDENTIFIER": "$(TELEPORT_BUNDLE_ID).mac.share",
+        "SKIP_INSTALL": "YES",
       },
     },
   ],
