@@ -10,5 +10,7 @@
     "skipLibCheck": true,
     "isolatedModules": true
   },
-  "include": ["src", "test"]
+  "include": ["src", "test"],
+  // Runs under Node (see vitest.config.ts), not the Workers runtime these types describe.
+  "exclude": ["test/worker.test.ts", "test/stubs"]
 }

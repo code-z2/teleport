@@ -173,3 +173,70 @@ their previous values.
 `/v1/send` accepts the new kinds. On iOS, `pair` and `pair-ok` arrive as alert
 pushes ("Pairing request" / "Paired") with the envelope in `env`, and never as
 Live Activities.
+
+---
+
+# Mac mailbox (phase 2)
+
+A Mac doesn't receive pushes. It keeps a WebSocket open to a **mailbox**, a
+Cloudflare Durable Object named by the Mac's id, `fp(mac.ks)`. The mailbox
+relays bytes between the Mac and phones and never sees plaintext. It stores
+nothing apart from the attachments on the open WebSocket connections.
+
+Every request carries `Authorization: Bearer <RELAY_KEY>`. `:id` is 11 base64url
+characters.
+
+## Mac connection: `GET /v1/mailbox/:id/connect` (WebSocket)
+
+The Mac proves it owns the mailbox:
+
+```
+mailbox → Mac   {"t":"challenge","nonce":b64u(32)}
+Mac → mailbox   {"t":"auth","ks":b64u(65),"sig":b64u(64)}
+                sig = ECDSA-P256-SHA256(mac.ks, utf8("teleport/v1/mailbox|" + id + "|" + nonce)), raw r‖s
+mailbox → Mac   {"t":"ready"}
+```
+
+- The mailbox requires `fp(ks) == id` and a valid signature. On failure it
+  closes the connection with code **4401**.
+- A connection that hasn't authenticated within 30 s is closed with **4408**.
+- A newer authenticated connection replaces the older one, which is closed
+  with **4000** "replaced".
+- **Keep-alive:** the Mac sends the text `ping` and gets `pong`. The mailbox
+  answers automatically, without waking up (hibernation).
+
+## Status: `GET /v1/mailbox/:id/status`
+
+Returns `{"online": true|false, "since": <unix seconds>|null}`. `since` is when
+the current Mac connection authenticated.
+
+## Delivering envelopes: `POST /v1/send` with `to: {"platform":"mac","mailbox":":id"}`
+
+- If the Mac is connected, it receives `{"t":"env","env":<Envelope>}` and the
+  sender gets `200 {"ok":true}`.
+- Otherwise the sender gets **`503 {"ok":false,"error":"offline"}`**. Nothing
+  is queued.
+
+## Sessions: `GET /v1/mailbox/:id/session` (WebSocket, phone)
+
+A session is a byte pipe between one phone and the Mac. Its contents (the
+handshake, encrypted frames and file operations) are specified in phase 5. The
+mailbox only routes them.
+
+- **Mac offline:** the session request gets `503 {"ok":false,"error":"offline"}`
+  instead of a WebSocket.
+- **Opening:** the mailbox gives the session a random 16-byte `sid` and tells
+  the Mac `{"t":"open","sid":b64u(sid)}`.
+- **Phone → Mac:** the phone sends **binary** messages. The Mac receives
+  `sid ‖ payload`.
+- **Mac → phone:** the Mac sends binary `sid ‖ payload`. The phone receives
+  `payload`.
+- **Closing:**
+  - When the phone disconnects, the Mac gets `{"t":"close","sid":…}`.
+  - The Mac can send `{"t":"close","sid":…}`, and the mailbox then closes the
+    phone's connection with code 1000.
+  - If the Mac disconnects, every session is closed with **4410**.
+- **Limits:**
+  - At most 8 sessions per mailbox; the next one gets `429`.
+  - At most 1 MiB per message.
+  - A text message from the phone closes the session with **4400**.

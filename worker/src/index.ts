@@ -5,8 +5,11 @@
 import { buildMessages, sendAll, type Recipient, type ServiceAccount } from "./fcm";
 import { isToken, parseEnvelope } from "./envelope";
 
+export { MacMailbox } from "./mailbox";
+
 export interface Env {
   BLOBS: R2Bucket;
+  MAILBOX: DurableObjectNamespace;
   LIMITER?: RateLimit;
   RELAY_KEY: string;
   FCM_SERVICE_ACCOUNT: string; // JSON of the Firebase service account
@@ -14,6 +17,13 @@ export interface Env {
 
 export const MAX_BLOB_BYTES = 10 * 1024 * 1024;
 const BLOB_ID = /^[A-Za-z0-9_-]{22}$/;
+const MAILBOX_ID = /^[A-Za-z0-9_-]{11}$/;
+
+/** Forwards to the Mac's mailbox Durable Object, telling it its own id. */
+function mailbox(env: Env, id: string, path: string, init: Request | RequestInit): Promise<Response> {
+  const stub = env.MAILBOX.get(env.MAILBOX.idFromName(id));
+  return stub.fetch(new Request(`https://mailbox${path}?id=${id}`, init));
+}
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -38,13 +48,20 @@ function newBlobId(): string {
 }
 
 async function handleSend(req: Request, env: Env): Promise<Response> {
-  let body: { to?: Partial<Recipient>; env?: unknown };
+  let body: { to?: Partial<Omit<Recipient, "platform">> & { platform?: string; mailbox?: unknown }; env?: unknown };
   try {
     body = await req.json();
   } catch {
     return err(400, "invalid json");
   }
   const to = body.to;
+  // Macs are reached through their mailbox (a live connection), not push.
+  if (to?.platform === "mac") {
+    if (typeof to.mailbox !== "string" || !MAILBOX_ID.test(to.mailbox)) return err(400, "invalid to.mailbox");
+    const envelope = parseEnvelope(body.env);
+    if (typeof envelope === "string") return err(400, envelope);
+    return mailbox(env, to.mailbox, "/deliver", { method: "POST", body: JSON.stringify(envelope) });
+  }
   if (!to || (to.platform !== "ios" && to.platform !== "android") || !isToken(to.fcm)) return err(400, "invalid to");
   if (to.la !== undefined && (to.platform !== "ios" || !isToken(to.la))) return err(400, "invalid to.la");
   const envelope = parseEnvelope(body.env);
@@ -104,6 +121,13 @@ export default {
       return req.method === "POST" ? handleSend(req, env) : err(405, "method not allowed");
     }
     if (url.pathname === "/v1/blob") return handleBlob(req, env, null);
+    const mb = url.pathname.match(/^\/v1\/mailbox\/([^/]+)\/(connect|status|session)$/);
+    if (mb) {
+      const [, id, action] = mb;
+      if (!MAILBOX_ID.test(id)) return err(404, "not found");
+      if (action === "status" && req.method !== "GET") return err(405, "method not allowed");
+      return mailbox(env, id, `/${action}`, req);
+    }
     const m = url.pathname.match(/^\/v1\/blob\/([^/]+)$/);
     if (m) return handleBlob(req, env, m[1]);
     return err(404, "not found");

@@ -7,6 +7,11 @@
 	"observability": {
 		"enabled": false
 	},
+	// One MacMailbox per Mac: holds its live connection and relays sessions (SPEC.md "Mac mailbox").
+	"durable_objects": {
+		"bindings": [{ "name": "MAILBOX", "class_name": "MacMailbox" }]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["MacMailbox"] }],
 	"r2_buckets": [
 		{
 			"binding": "BLOBS",

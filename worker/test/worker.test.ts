@@ -35,6 +35,7 @@ async function serviceAccount(): Promise<string> {
 
 const makeEnv = async (): Promise<Env> => ({
   BLOBS: new FakeR2() as unknown as R2Bucket,
+  MAILBOX: {} as DurableObjectNamespace,
   RELAY_KEY: KEY,
   FCM_SERVICE_ACCOUNT: await serviceAccount(),
 });
