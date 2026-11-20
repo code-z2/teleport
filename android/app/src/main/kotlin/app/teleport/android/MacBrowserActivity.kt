@@ -121,6 +121,13 @@ class MacBrowserActivity : ComponentActivity() {
         client?.close()
     }
 
+    /** In the background, hang up (the Mac stops showing this phone as browsing) unless a
+     *  transfer is still running. The next action reconnects on its own. */
+    override fun onStop() {
+        super.onStop()
+        if (transfers.none { it.state == "running" }) { client?.close(); client = null }
+    }
+
     // ---------- session ----------
 
     private suspend fun session(): FileSessionClient = connectLock.withLock {

@@ -50,7 +50,7 @@ struct ContentView: View {
                             if peer.platform == .mac {
                                 // A Mac's files can be browsed over an end-to-end encrypted session.
                                 NavigationLink {
-                                    MacBrowserView(connection: MacConnection(teleport: teleport, mac: peer), path: "")
+                                    MacBrowserRoot(teleport: teleport, mac: peer)
                                 } label: {
                                     Label {
                                         VStack(alignment: .leading) {

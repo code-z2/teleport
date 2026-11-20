@@ -46,9 +46,17 @@ final class MacConnection {
         }
     }
 
+    /// Ends the session (the Mac stops showing this phone as browsing). The next
+    /// operation reconnects on its own.
     func close() {
         let c = client
         client = nil
+        Task { await c?.close() }
+    }
+
+    /// Leaving the Mac's files (the screen is popped and this is released) hangs up.
+    isolated deinit {
+        let c = client
         Task { await c?.close() }
     }
 
@@ -120,6 +128,26 @@ final class Transfer: Identifiable {
 
     var fraction: Double { total > 0 ? Double(done) / Double(total) : 0 }
     func cancel() { task?.cancel() }
+}
+
+// MARK: Entry point
+
+/// Owns one connection for the whole time the Mac's files are open, so redraws of the
+/// device list don't start new sessions, and closes it when Teleport goes to the background.
+struct MacBrowserRoot: View {
+    @State private var connection: MacConnection
+    @Environment(\.scenePhase) private var scenePhase
+
+    init(teleport: Teleport, mac: Peer) {
+        _connection = State(initialValue: MacConnection(teleport: teleport, mac: mac))
+    }
+
+    var body: some View {
+        MacBrowserView(connection: connection, path: "")
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .background { connection.close() }
+            }
+    }
 }
 
 // MARK: Folder screen
