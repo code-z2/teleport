@@ -15,8 +15,6 @@ struct ContentView: View {
     @State private var showingQR = false
     @State private var scanning = false
     @State private var status = ""
-    @State private var testText = "Hello from iPhone"
-    @State private var testTarget: String?
 
     var body: some View {
         NavigationStack {
@@ -87,16 +85,6 @@ struct ContentView: View {
                     } footer: {
                         Text("Pairing takes one scan: one device shows its code, the other scans it, then the first taps Allow. Swipe left to remove a device.")
                     }
-
-                    if !peers.isEmpty {
-                        Section("Test") {
-                            Picker("Send to", selection: $testTarget) {
-                                ForEach(peers) { Text($0.name).tag(Optional($0.id)) }
-                            }
-                            TextField("Text", text: $testText)
-                            Button("Send test clip") { send(.text(testText)) }
-                        }
-                    }
                 } else {
                     Text("Could not load device keys. Check Config/Teleport.xcconfig and entitlements.")
                 }
@@ -132,7 +120,6 @@ struct ContentView: View {
         peers = teleport.store.sortedPeers
         requests = teleport.store.pairRequests.values.sorted { $0.expires < $1.expires }
         waiting = teleport.store.pendingOutbound.values.filter { teleport.store.peers[$0.id] == nil }
-        if testTarget == nil || !peers.contains(where: { $0.id == testTarget }) { testTarget = peers.first?.id }
         for peer in peers { ShareSuggestion.donate(for: peer) }
     }
 
@@ -174,23 +161,6 @@ struct ContentView: View {
                 status = "Couldn't finish pairing: \(error)"
             }
             reload()
-        }
-    }
-
-    private func send(_ clip: Clip) {
-        guard let teleport, let peer = peers.first(where: { $0.id == testTarget }) else { return }
-        status = "Sending…"
-        Task {
-            do {
-                try await teleport.send(clip, to: peer)
-                status = "Sent to \(peer.name)"
-            } catch RelayError.peerGone {
-                status = "\(peer.name)'s push address expired. Open Teleport there, or re-pair."
-            } catch RelayError.offline {
-                status = "\(peer.name) is offline (asleep or no internet)."
-            } catch {
-                status = "Failed: \(error)"
-            }
         }
     }
 }

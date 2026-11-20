@@ -70,7 +70,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import app.teleport.core.Clip
 import app.teleport.core.InvalidCodeException
 import app.teleport.core.PairRequest
 import app.teleport.core.Peer
@@ -83,7 +82,6 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.util.Date
 
@@ -249,12 +247,6 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                if (peers.isNotEmpty()) {
-                    // Temporary: removed once the Mac integration is complete.
-                    section("Test") {}
-                    item { TestSection() }
-                }
-
                 item {
                     KeystoreKeys.strongBox?.let { strongBox ->
                         Row(
@@ -298,21 +290,6 @@ class MainActivity : ComponentActivity() {
                         teleport.deny(request.id); ClipDelivery.cancel(this@MainActivity); reload()
                     }) { Text("Deny") }
                     Button(onClick = { allow(request) }) { Text("Allow") }
-                }
-            }
-        }
-    }
-
-    @Composable
-    private fun TestSection() {
-        var text by remember { mutableStateOf("Hello from Android") }
-        Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(text, { text = it }, label = { Text("Test clip") }, modifier = Modifier.fillMaxWidth())
-            peers.forEach { peer ->
-                OutlinedButton(onClick = { send(Clip.Text(text), peer) }, modifier = Modifier.fillMaxWidth()) {
-                    SymbolIcon(R.drawable.ic_sym_send, size = 18)
-                    Spacer(Modifier.size(8.dp))
-                    Text("Send to ${peer.name}")
                 }
             }
         }
@@ -498,20 +475,6 @@ class MainActivity : ComponentActivity() {
                 if (showingQr && qrCode == null) qrCode = teleport.qrCode(name)
                 PeerShortcut.sync(this)
             }
-        }
-    }
-
-    private fun send(clip: Clip, peer: Peer) {
-        say("Sending to ${peer.name}…")
-        lifecycleScope.launch {
-            say(
-                withContext(Dispatchers.IO) {
-                    runCatching { teleport.send(clip, peer) }.fold(
-                        { "Sent to ${peer.name}" },
-                        { if (it is app.teleport.core.OfflineException) "${peer.name} is offline" else "Failed: ${it.message}" },
-                    )
-                },
-            )
         }
     }
 

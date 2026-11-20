@@ -220,7 +220,7 @@ struct MacBrowserView: View {
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: Self.symbol(for: entry.name))
-                        .foregroundStyle(.tint)
+                        .foregroundStyle(.secondary)
                         .frame(width: 24)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(entry.name).foregroundStyle(.primary).lineLimit(2)
@@ -228,9 +228,12 @@ struct MacBrowserView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Image(systemName: "arrow.down.circle").foregroundStyle(.tint)
+                    Image(systemName: "arrow.down.circle").foregroundStyle(.secondary)
                 }
+                .contentShape(Rectangle())
             }
+            // Plain, so the row reads as a neutral list item rather than tinted button text.
+            .buttonStyle(.plain)
         }
     }
 
