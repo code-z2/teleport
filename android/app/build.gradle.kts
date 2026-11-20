@@ -54,5 +54,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
     implementation("com.google.zxing:core:3.5.4")
+    implementation("com.squareup.okhttp3:okhttp:5.1.0")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }

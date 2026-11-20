@@ -220,7 +220,7 @@ the current Mac connection authenticated.
 ## Sessions: `GET /v1/mailbox/:id/session` (WebSocket, phone)
 
 A session is a byte pipe between one phone and the Mac. Its contents (the
-handshake, encrypted frames and file operations) are specified in phase 5. The
+handshake, encrypted frames and file operations) are specified under "File sessions". The
 mailbox only routes them.
 
 - **Mac offline:** the session request gets `503 {"ok":false,"error":"offline"}`
@@ -240,3 +240,66 @@ mailbox only routes them.
   - At most 8 sessions per mailbox; the next one gets `429`.
   - At most 1 MiB per message.
   - A text message from the phone closes the session with **4400**.
+
+# File sessions (v2)
+
+A phone browses the Mac's home folder through a mailbox session (above). Everything
+inside the session is end-to-end encrypted; the relay sees only opaque frames.
+
+## Handshake
+
+The first binary message each way is plain JSON (UTF-8).
+
+```
+phone → Mac: {"t":"hello","v":1,"from":fp(phone.ks),"epk":b64u(65B),"n":b64u(16B),"ts":unix,"sig":b64u}
+Mac → phone: {"t":"accept","epk":b64u(65B),"n":b64u(16B),"sig":b64u}
+           or {"t":"error","code":"denied"|"stale"|"signature"|"version"} and the Mac closes the session
+```
+
+- `H` = UTF-8 `teleport/v1/session|<mailbox>|<from>|<epk>|<n>|<ts>` (the strings exactly as sent).
+- `hello.sig` = ECDSA(phone.ks, `H`), raw r‖s.
+- `A` = `H` ‖ UTF-8 `|<accept.epk>|<accept.n>`; `accept.sig` = ECDSA(mac.ks, `A`).
+- The Mac accepts only phones in its peer list (`from` = fp of a paired phone's
+  `ks`) with `|ts − now| ≤ 300`. The phone verifies `accept.sig` with the Mac's
+  paired `ks`. Binding the mailbox id into `H` stops a hello being replayed to
+  another Mac.
+- Keys: `okm = HKDF-SHA256(ikm = ECDH(own ephemeral, other epk), salt = SHA256(A),
+  info = "teleport/v1/session", 64 bytes)`; `k_p2m = okm[0..32]`, `k_m2p = okm[32..64]`.
+  Ephemeral keys are discarded when the session ends (forward secrecy).
+
+## Frames
+
+Every later binary message is `AES-256-GCM(k_dir, nonce, plaintext, aad = empty)`
+as ciphertext ‖ tag.
+
+- `nonce = dir (u32 BE) ‖ counter (u64 BE)`; `dir` = 1 phone→Mac, 2 Mac→phone.
+- `counter` is implicit: 0 for the first frame in each direction, +1 per frame.
+  WebSockets are ordered, so a dropped, replayed or reordered frame fails to
+  decrypt, and either side then closes the session.
+- Plaintext is `0x01 ‖ JSON` (control) or `0x02 ‖ id (u32 BE) ‖ bytes` (data).
+- At most 256 KiB of data per frame.
+
+## Operations
+
+Requests carry an `id` (u32) chosen by the phone; replies and data use the same id.
+All paths are relative to the Mac user's home folder, `/`-separated; `""` is home.
+
+| Phone sends | Mac replies |
+|---|---|
+| `{"op":"list","id","path"}` | `{"op":"entries","id","path","entries":[{"name","dir","size","mtime"}]}`, folders first, then by name |
+| `{"op":"download","id","path","offset"?}` | `{"op":"meta","id","size","mime"}`, data frames from `offset`, then `{"op":"done","id","sha256"}` (SHA-256 of the whole file, b64u) |
+| `{"op":"upload","id","dir","name","size"}` | `{"op":"ready","id","name"}` (the final name; a clash becomes `name (2).ext`). The phone sends data frames, then `{"op":"done","id","sha256"}`; the Mac checks the hash, moves the file into place and replies `{"op":"saved","id","name"}` |
+| `{"op":"cancel","id"}` | Either side may send it. The transfer stops; a cancelled upload leaves no file |
+| | `{"op":"error","id","code","message"}`, `code` ∈ `not_found`, `denied`, `bad_path`, `exists`, `io`, `hash`, `busy` |
+
+**Flow control.** The receiver of data sends `{"op":"ack","id","bytes"}` (total
+bytes received so far) at least every 1 MiB. The sender keeps at most 2 MiB
+unacknowledged, so neither the relay nor the receiver buffers a whole file.
+
+## Path rules (enforced by the Mac)
+
+- Reject absolute paths, NUL bytes and any `..` component; drop empty and `.` components.
+- Unless "Show hidden files" is on, reject any component starting with `.` and
+  a top-level `Library`.
+- Resolve symlinks and reject anything whose real path is outside the home folder.
+- Listings omit what the rules would reject.

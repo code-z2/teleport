@@ -26,6 +26,14 @@ final class MailboxConnection {
     var onState: (State) -> Void = { _ in }
     /// Called with each envelope's JSON as delivered by a phone.
     var onEnvelope: (String) -> Void = { _ in }
+    /// Names of the phones browsing this Mac right now.
+    var onBrowsers: ([String]) -> Void = { _ in }
+    /// Read when each file session starts.
+    var showHiddenFiles: () -> Bool = { false }
+
+    /// Open file sessions, by raw 16-byte sid.
+    private var sessions: [Data: SessionEntry] = [:]
+    private struct SessionEntry { let pipe: MailboxSessionPipe; var phone: String? }
 
     private let teleport: Teleport
     private var task: URLSessionWebSocketTask?
@@ -85,6 +93,7 @@ final class MailboxConnection {
     }
 
     private func disconnect(reason: String) {
+        endSessions()
         generation += 1
         pingTimer?.invalidate()
         task?.cancel(with: .goingAway, reason: nil)
@@ -93,6 +102,7 @@ final class MailboxConnection {
     }
 
     private func scheduleReconnect(_ reason: String) {
+        endSessions()
         pingTimer?.invalidate()
         state = .offline(reason)
         let work = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.connect() } }
@@ -119,6 +129,12 @@ final class MailboxConnection {
     }
 
     private func handle(_ message: URLSessionWebSocketTask.Message, _ task: URLSessionWebSocketTask) {
+        if case .data(let data) = message {
+            // A session frame: sid (16 bytes) ‖ payload.
+            guard data.count >= 16 else { return }
+            sessions[Data(data.prefix(16))]?.pipe.deliver(Data(data.dropFirst(16)))
+            return
+        }
         guard case .string(let text) = message, text != "pong",
               let obj = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
               let type = obj["t"] as? String
@@ -142,11 +158,60 @@ final class MailboxConnection {
             else { return }
             onEnvelope(json)
         case "open":
-            // File sessions arrive in phase 5. Until then, decline politely.
-            if let sid = obj["sid"] as? String { send(["t": "close", "sid": sid]) }
+            if let sid = obj["sid"] as? String, let raw = Data(base64URL: sid), raw.count == 16 {
+                openSession(raw, task)
+            }
+        case "close":
+            if let sid = obj["sid"] as? String, let raw = Data(base64URL: sid) {
+                sessions.removeValue(forKey: raw)?.pipe.finish()
+                reportBrowsers()
+            }
         default:
             break
         }
+    }
+
+    // MARK: File sessions
+
+    private func openSession(_ sid: Data, _ task: URLSessionWebSocketTask) {
+        let pipe = MailboxSessionPipe(sid: sid, task: task)
+        sessions[sid] = SessionEntry(pipe: pipe, phone: nil)
+        let teleport = teleport
+        let server = FileServer(
+            pipe: pipe, signer: teleport.keys.signing, mailbox: teleport.myID,
+            options: .init(home: FileManager.default.homeDirectoryForCurrentUser, showHidden: showHiddenFiles()),
+            phones: { teleport.store.peers[$0] })
+        log.notice("file session opened")
+        Task { [weak self] in
+            // Learn who it is once the handshake is through, for the menu.
+            Task { @MainActor [weak self] in
+                for _ in 0..<50 {
+                    if let phone = await server.phone {
+                        self?.sessions[sid]?.phone = phone.name
+                        self?.reportBrowsers()
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
+            }
+            await server.run()
+            await MainActor.run {
+                guard let self else { return }
+                self.sessions[sid] = nil
+                self.reportBrowsers()
+                log.notice("file session closed")
+            }
+        }
+    }
+
+    private func endSessions() {
+        for entry in sessions.values { entry.pipe.finish() }
+        sessions = [:]
+        reportBrowsers()
+    }
+
+    private func reportBrowsers() {
+        onBrowsers(Array(Set(sessions.values.compactMap(\.phone))).sorted())
     }
 
     private func send(_ object: [String: Any]) {
@@ -179,5 +244,43 @@ final class MailboxConnection {
         case 4408: "Sign-in to the relay timed out"
         default: (error as NSError).code == NSURLErrorNotConnectedToInternet ? "No internet connection" : "Can't reach the relay"
         }
+    }
+}
+
+/// One file session's pipe through the mailbox WebSocket: frames go out as sid ‖ payload.
+final class MailboxSessionPipe: SessionPipe, @unchecked Sendable {
+    let sid: Data
+    private let task: URLSessionWebSocketTask
+    let incoming: AsyncThrowingStream<Data, Error>
+    private let continuation: AsyncThrowingStream<Data, Error>.Continuation
+    private let lock = NSLock()
+    private var closed = false
+
+    init(sid: Data, task: URLSessionWebSocketTask) {
+        self.sid = sid
+        self.task = task
+        (incoming, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
+    }
+
+    func deliver(_ data: Data) { continuation.yield(data) }
+
+    /// The phone went away (or the mailbox connection did).
+    func finish() {
+        lock.withLock { closed = true }
+        continuation.finish()
+    }
+
+    func send(_ data: Data) {
+        guard !lock.withLock({ closed }) else { return }
+        task.send(.data(sid + data)) { _ in }
+    }
+
+    /// The server is done: tell the mailbox to hang up on the phone.
+    func close() {
+        let wasClosed = lock.withLock { () -> Bool in defer { closed = true }; return closed }
+        continuation.finish()
+        guard !wasClosed else { return }
+        let text = #"{"t":"close","sid":"\#(sid.base64URL)"}"#
+        task.send(.string(text)) { _ in }
     }
 }

@@ -27,12 +27,19 @@ final class AppModel {
         didSet { UserDefaults.standard.set(saveImages, forKey: "saveImages") }
     }
     var startAtLogin: Bool = LoginItem.enabled
+    /// Let phones see dotfiles and ~/Library when browsing.
+    var showHiddenFiles: Bool {
+        didSet { UserDefaults.standard.set(showHiddenFiles, forKey: "showHiddenFiles") }
+    }
+    /// Phones browsing this Mac right now.
+    private(set) var browsers: [String] = []
 
     init() {
         let defaults = UserDefaults.standard
         defaults.register(defaults: ["keepAwake": true, "saveImages": true])
         keepAwakeOnPower = defaults.bool(forKey: "keepAwake")
         saveImages = defaults.bool(forKey: "saveImages")
+        showHiddenFiles = defaults.bool(forKey: "showHiddenFiles")
         Self.migrateStore()
         do {
             let teleport = try Teleport(config: .fromBundle(), platform: .mac)
@@ -52,6 +59,8 @@ final class AppModel {
 
         connection?.onState = { [weak self] in self?.state = $0 }
         connection?.onEnvelope = { [weak self] env in self?.receive(env) }
+        connection?.onBrowsers = { [weak self] in self?.browsers = $0 }
+        connection?.showHiddenFiles = { UserDefaults.standard.bool(forKey: "showHiddenFiles") }
         connection?.start()
         reload()
     }
@@ -71,7 +80,15 @@ final class AppModel {
     var isOnline: Bool { if case .online = state { true } else { false } }
     var keepAwakeActive: Bool { keepAwake.active }
 
+    /// Desktop / Documents / Downloads → readable by Teleport (empty until first requested).
+    private(set) var folderAccess = HomeFolderAccess.status
+
+    func requestFolderAccess() {
+        Task { folderAccess = await HomeFolderAccess.request() }
+    }
+
     func reload() {
+        folderAccess = HomeFolderAccess.status
         guard let teleport else { return }
         peers = teleport.store.sortedPeers
         requests = teleport.store.pairRequests.values.sorted { $0.expires < $1.expires }

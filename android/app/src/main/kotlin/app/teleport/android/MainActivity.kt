@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -196,15 +197,23 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 items(peers, key = { it.id }) { peer ->
+                    val isMac = peer.platform == "mac"
                     ListItem(
                         headlineContent = { Text(peer.name) },
-                        supportingContent = { Text("${platformLabel(peer.platform)} · paired ${DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(peer.pairedAt))}") },
+                        supportingContent = {
+                            Text(
+                                if (isMac) "Mac · tap to browse files"
+                                else "${platformLabel(peer.platform)} · paired ${DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(peer.pairedAt))}",
+                            )
+                        },
                         leadingContent = { SymbolIcon(platformIcon(peer.platform)) },
                         trailingContent = {
                             IconButton(onClick = { removing = peer }) { SymbolIcon(R.drawable.ic_sym_delete, "Remove ${peer.name}") }
                         },
                         colors = groupedColors(),
-                        modifier = Modifier.groupedItem(),
+                        modifier = Modifier.groupedItem().clickable(enabled = isMac) {
+                            startActivity(MacBrowserActivity.intent(this@MainActivity, peer))
+                        },
                     )
                 }
                 items(waiting, key = { "wait-" + it.id }) { peer ->

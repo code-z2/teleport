@@ -24,6 +24,10 @@
 	<true/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Scan the pairing code shown on your other phone.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

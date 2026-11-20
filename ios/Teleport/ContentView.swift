@@ -49,7 +49,23 @@ struct ContentView: View {
 
                     Section {
                         ForEach(peers) { peer in
-                            Label(peer.name, systemImage: peer.platform.symbol)
+                            if peer.platform == .mac {
+                                // A Mac's files can be browsed over an end-to-end encrypted session.
+                                NavigationLink {
+                                    MacBrowserView(connection: MacConnection(teleport: teleport, mac: peer), path: "")
+                                } label: {
+                                    Label {
+                                        VStack(alignment: .leading) {
+                                            Text(peer.name)
+                                            Text("Browse files").font(.caption).foregroundStyle(.secondary)
+                                        }
+                                    } icon: {
+                                        Image(systemName: peer.platform.symbol)
+                                    }
+                                }
+                            } else {
+                                Label(peer.name, systemImage: peer.platform.symbol)
+                            }
                         }
                         .onDelete { offsets in
                             for i in offsets { teleport.remove(peers[i].id) }

@@ -262,3 +262,101 @@ export async function openPair(
   return { card, cardJson, proof };
 }
 export { enc, dec };
+
+// ---------- file sessions (SPEC.md "File sessions") ----------
+
+export const SESSION_INFO = enc.encode("teleport/v1/session");
+export const DIR_PHONE_TO_MAC = 1;
+export const DIR_MAC_TO_PHONE = 2;
+
+export interface Hello {
+  t: "hello";
+  v: 1;
+  from: string;
+  epk: string;
+  n: string;
+  ts: number;
+  sig: string;
+}
+export interface Accept {
+  t: "accept";
+  epk: string;
+  n: string;
+  sig: string;
+}
+
+/** The bytes the phone signs. */
+export function helloTranscript(mailbox: string, h: Omit<Hello, "t" | "v" | "sig">): Uint8Array {
+  return enc.encode(`teleport/v1/session|${mailbox}|${h.from}|${h.epk}|${h.n}|${h.ts}`);
+}
+
+/** The bytes the Mac signs; its SHA-256 is the HKDF salt. */
+export function acceptTranscript(helloT: Uint8Array, a: Omit<Accept, "t" | "sig">): Uint8Array {
+  return concat(helloT, enc.encode(`|${a.epk}|${a.n}`));
+}
+
+async function ecdsaSign(ks: RawKeyPair, data: Uint8Array): Promise<Uint8Array> {
+  return new Uint8Array(await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, await importSignPriv(ks), data));
+}
+
+export async function ecdsaVerify(pub: Uint8Array, sig: Uint8Array, data: Uint8Array): Promise<boolean> {
+  return subtle.verify({ name: "ECDSA", hash: "SHA-256" }, await importVerifyPub(pub), sig, data);
+}
+
+export async function makeHello(phoneKs: RawKeyPair, mailbox: string, eph: RawKeyPair, n: Uint8Array, ts: number): Promise<Hello> {
+  const body = { from: await fingerprint(phoneKs.pub), epk: b64u(eph.pub), n: b64u(n), ts };
+  const sig = await ecdsaSign(phoneKs, helloTranscript(mailbox, body));
+  return { t: "hello", v: 1, ...body, sig: b64u(sig) };
+}
+
+export async function makeAccept(macKs: RawKeyPair, helloT: Uint8Array, eph: RawKeyPair, n: Uint8Array): Promise<Accept> {
+  const body = { epk: b64u(eph.pub), n: b64u(n) };
+  const sig = await ecdsaSign(macKs, acceptTranscript(helloT, body));
+  return { t: "accept", ...body, sig: b64u(sig) };
+}
+
+/** 64 bytes: phone→Mac key ‖ Mac→phone key. Either side: own ephemeral private, other's ephemeral public. */
+export async function sessionKeys(ownEph: RawKeyPair, otherEpk: Uint8Array, acceptT: Uint8Array): Promise<{ p2m: Uint8Array; m2p: Uint8Array }> {
+  const ss = await subtle.deriveBits({ name: "ECDH", public: await importEcdhPub(otherEpk) }, await importEcdhPriv(ownEph), 256);
+  const salt = new Uint8Array(await subtle.digest("SHA-256", acceptT));
+  const ikm = await subtle.importKey("raw", ss, "HKDF", false, ["deriveBits"]);
+  const okm = new Uint8Array(await subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info: SESSION_INFO }, ikm, 512));
+  return { p2m: okm.slice(0, 32), m2p: okm.slice(32, 64) };
+}
+
+/** Nonce for frame `counter` in direction `dir`: dir (4 bytes BE) ‖ counter (8 bytes BE). */
+export function frameNonce(dir: number, counter: number): Uint8Array {
+  const n = new Uint8Array(12);
+  const v = new DataView(n.buffer);
+  v.setUint32(0, dir);
+  v.setBigUint64(4, BigInt(counter));
+  return n;
+}
+
+export const sealFrame = (key: Uint8Array, dir: number, counter: number, plaintext: Uint8Array) =>
+  aesGcm("encrypt", key, frameNonce(dir, counter), plaintext, new Uint8Array());
+export const openFrame = (key: Uint8Array, dir: number, counter: number, frame: Uint8Array) =>
+  aesGcm("decrypt", key, frameNonce(dir, counter), frame, new Uint8Array());
+
+/** Frame plaintexts: 0x01 ‖ JSON control, or 0x02 ‖ transfer id (u32 BE) ‖ bytes. */
+export function controlPlaintext(msg: object): Uint8Array {
+  return concat(new Uint8Array([1]), enc.encode(JSON.stringify(msg)));
+}
+export function dataPlaintext(id: number, bytes: Uint8Array): Uint8Array {
+  const head = new Uint8Array(5);
+  head[0] = 2;
+  new DataView(head.buffer).setUint32(1, id);
+  return concat(head, bytes);
+}
+
+/**
+ * Mac-side path check (relative to home). Returns the normalised relative path or null.
+ * Symlink resolution happens on the Mac against the real file system; this covers the lexical rules.
+ */
+export function checkPath(path: string, showHidden: boolean): string | null {
+  if (path.startsWith("/") || path.includes("\0")) return null;
+  const parts = path.split("/").filter((p) => p !== "" && p !== ".");
+  if (parts.some((p) => p === "..")) return null;
+  if (!showHidden && parts.some((p, i) => p.startsWith(".") || (i === 0 && p === "Library"))) return null;
+  return parts.join("/");
+}

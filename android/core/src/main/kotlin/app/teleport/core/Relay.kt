@@ -70,6 +70,15 @@ class RelayClient(private val baseUrl: String, private val relayKey: String) {
 
     fun getBlob(id: String): ByteArray = call("GET", "/v1/blob/$id")
 
+    /** Whether a Mac is connected to its mailbox; null if the relay couldn't be reached. */
+    fun isOnline(mailbox: String): Boolean? = runCatching {
+        Json.parseToJsonElement(String(call("GET", "/v1/mailbox/$mailbox/status"))).jsonObject["online"]!!.jsonPrimitive.content == "true"
+    }.getOrNull()
+
+    /** WebSocket URL and Authorization header for a file session with [mailbox]. */
+    fun sessionUrl(mailbox: String): String = baseUrl.trimEnd('/').replaceFirst("http", "ws") + "/v1/mailbox/$mailbox/session"
+    val authorization: String get() = "Bearer $relayKey"
+
     fun deleteBlob(id: String) {
         call("DELETE", "/v1/blob/$id")
     }

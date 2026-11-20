@@ -14,6 +14,12 @@ struct MenuPanel: View {
             if let error = model.loadError {
                 Text(error).foregroundStyle(.red).font(.callout)
             }
+            if !model.browsers.isEmpty {
+                Label("\(model.browsers.formatted(.list(type: .and))) browsing your files",
+                      systemImage: "folder.badge.person.crop")
+                    .font(.callout)
+                    .foregroundStyle(.tint)
+            }
             if !model.requests.isEmpty { requestsSection }
             if let code = model.pairingCode { pairingSection(code) }
             devicesSection
@@ -173,9 +179,39 @@ struct MenuPanel: View {
                 }
             }
             Toggle("Save received images to Downloads", isOn: $model.saveImages)
+            folderAccessRow
+            Toggle(isOn: $model.showHiddenFiles) {
+                Text("Show hidden files to phones")
+                Text("Dotfiles and ~/Library, when browsing this Mac.")
+            }
         }
         .toggleStyle(.switch)
         .controlSize(.small)
+    }
+}
+
+extension MenuPanel {
+    /// Phones can browse all of ~ except what macOS guards separately; this grants those.
+    @ViewBuilder
+    var folderAccessRow: some View {
+        let access = model.folderAccess
+        if access.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("macOS asks on this Mac before phones can open Desktop, Documents and Downloads.",
+                      systemImage: "lock.shield")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Allow Desktop, Documents & Downloads…") { model.requestFolderAccess() }
+                    .controlSize(.small)
+            }
+        } else if access.values.contains(false) {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Phones can't open: \(HomeFolderAccess.folders.filter { access[$0] == false }.formatted(.list(type: .and))).",
+                      systemImage: "lock.shield")
+                    .font(.caption).foregroundStyle(.orange)
+                Button("Open Files & Folders Settings…") { HomeFolderAccess.openSettings() }
+                    .controlSize(.small)
+            }
+        }
     }
 }
 

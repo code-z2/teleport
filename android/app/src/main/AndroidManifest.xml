@@ -25,6 +25,12 @@
             </intent-filter>
         </activity>
 
+        <!-- Browse a paired Mac's files. -->
+        <activity
+            android:name=".MacBrowserActivity"
+            android:exported="false"
+            android:label="Mac files" />
+
         <!-- No-UI share target: encrypt, send, toast, finish. -->
         <activity
             android:name=".ShareActivity"

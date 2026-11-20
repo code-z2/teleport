@@ -116,3 +116,54 @@ for (const c of P.invalid) {
     });
   });
 }
+
+// ---------- file sessions ----------
+import {
+  acceptTranscript,
+  checkPath,
+  ecdsaVerify,
+  helloTranscript,
+  openFrame,
+  sealFrame,
+  sessionKeys,
+} from "./teleport.ts";
+
+const sv = JSON.parse(readFileSync(new URL("../vectors.json", import.meta.url), "utf8"));
+
+test("session: signatures verify against the device keys", async () => {
+  const s = sv.session;
+  const helloT = helloTranscript(s.mailbox, s.hello);
+  assert.equal(s.hello.from, await fingerprint(unb64u(sv.sender_ks.pub)));
+  assert.ok(await ecdsaVerify(unb64u(sv.sender_ks.pub), unb64u(s.hello.sig), helloT));
+  const acceptT = acceptTranscript(helloT, s.accept);
+  assert.equal(b64u(acceptT), s.accept_transcript);
+  assert.ok(await ecdsaVerify(unb64u(s.mac_ks.pub), unb64u(s.accept.sig), acceptT));
+  // A hello for a different mailbox must not verify.
+  assert.ok(!(await ecdsaVerify(unb64u(sv.sender_ks.pub), unb64u(s.hello.sig), helloTranscript("otherMailbx", s.hello))));
+});
+
+test("session: both sides derive the same keys", async () => {
+  const s = sv.session;
+  const acceptT = unb64u(s.accept_transcript);
+  const phone = await sessionKeys(raw(s.phone_eph), unb64u(s.accept.epk), acceptT);
+  const mac = await sessionKeys(raw(s.mac_eph), unb64u(s.hello.epk), acceptT);
+  assert.equal(b64u(phone.p2m), s.k_p2m);
+  assert.equal(b64u(mac.m2p), s.k_m2p);
+  assert.equal(b64u(phone.m2p), b64u(mac.m2p));
+});
+
+test("session: frames", async () => {
+  const s = sv.session;
+  for (const f of s.frames) {
+    const key = unb64u(f.dir === 1 ? s.k_p2m : s.k_m2p);
+    assert.equal(b64u(await sealFrame(key, f.dir, f.counter, unb64u(f.plaintext))), f.frame);
+    assert.equal(b64u(await openFrame(key, f.dir, f.counter, unb64u(f.frame))), f.plaintext);
+    // Wrong counter or direction fails.
+    await assert.rejects(openFrame(key, f.dir, f.counter + 1, unb64u(f.frame)));
+    await assert.rejects(openFrame(key, 3 - f.dir, f.counter, unb64u(f.frame)));
+  }
+});
+
+test("session: path rules", () => {
+  for (const p of sv.session.paths) assert.equal(checkPath(p.path, p.hidden), p.ok, p.path);
+});
