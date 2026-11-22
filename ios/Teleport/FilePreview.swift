@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 /// File → preview → save. Opening a file never saves it anywhere: the preview streams into
 /// a temporary cache, and Save (Files, Photos or Share) is a separate, explicit step.
+@available(iOS 17, *)
 struct FilePreviewView: View {
     let connection: MacConnection
     let path: String
@@ -94,7 +95,7 @@ struct FilePreviewView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .shadow(radius: 4, y: 2)
                 } else {
-                    Image(systemName: MacBrowserView.symbol(for: entry.name))
+                    Image(systemName: FileSymbols.symbol(for: entry.name))
                         .font(.system(size: 72)).foregroundStyle(.secondary)
                 }
             }
@@ -153,7 +154,7 @@ struct FilePreviewView: View {
         if let cached { return cached }
         if let fetching { return try await fetching.value }
         phase = .loading(0)
-        let dest = MacConnection.previewCache.appending(path: UUID().uuidString).appending(path: entry.name)
+        let dest = PreviewCache.url.appending(path: UUID().uuidString).appending(path: entry.name)
         let size = entry.size
         let task = Task { [connection, path] in
             try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)

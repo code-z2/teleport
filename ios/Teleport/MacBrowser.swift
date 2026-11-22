@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 
 /// One end-to-end encrypted file session with a Mac, shared by every folder screen
 /// pushed while browsing it. Reconnects on demand if the session drops.
+/// iOS 17+; iOS 16 uses `MacConnectionLegacy` (Legacy/MacBrowserLegacy.swift).
+@available(iOS 17, *)
 @MainActor
 @Observable
 final class MacConnection {
@@ -17,11 +19,8 @@ final class MacConnection {
     init(teleport: Teleport, mac: Peer) {
         self.teleport = teleport
         self.mac = mac
-        try? FileManager.default.removeItem(at: Self.previewCache)
+        try? FileManager.default.removeItem(at: PreviewCache.url)
     }
-
-    /// Full files fetched for previews. Temporary: cleared each time a Mac's files are opened.
-    static var previewCache: URL { URL.cachesDirectory.appending(path: "Previews", directoryHint: .isDirectory) }
 
     private func session() async throws -> FileSessionClient {
         if let client { return client }
@@ -108,6 +107,7 @@ final class MacConnection {
     }
 }
 
+@available(iOS 17, *)
 @MainActor
 @Observable
 final class Transfer: Identifiable {
@@ -137,6 +137,7 @@ final class Transfer: Identifiable {
 
 /// Owns one connection for the whole time the Mac's files are open, so redraws of the
 /// device list don't start new sessions, and closes it when Teleport goes to the background.
+@available(iOS 17, *)
 struct MacBrowserRoot: View {
     @State private var connection: MacConnection
     @Environment(\.scenePhase) private var scenePhase
@@ -155,6 +156,7 @@ struct MacBrowserRoot: View {
 
 // MARK: Folder screen
 
+@available(iOS 17, *)
 struct MacBrowserView: View {
     let connection: MacConnection
     let path: String
@@ -239,7 +241,7 @@ struct MacBrowserView: View {
                 FilePreviewView(connection: connection, path: child, entry: entry)
             } label: {
                 HStack(spacing: 12) {
-                    Image(systemName: Self.symbol(for: entry.name))
+                    Image(systemName: FileSymbols.symbol(for: entry.name))
                         .foregroundStyle(.secondary)
                         .frame(width: 24)
                     VStack(alignment: .leading, spacing: 2) {
@@ -299,20 +301,9 @@ struct MacBrowserView: View {
             }
         }
     }
-
-    static func symbol(for name: String) -> String {
-        guard let type = UTType(filenameExtension: (name as NSString).pathExtension) else { return "doc" }
-        if type.conforms(to: .image) { return "photo" }
-        if type.conforms(to: .movie) || type.conforms(to: .video) { return "film" }
-        if type.conforms(to: .audio) { return "waveform" }
-        if type.conforms(to: .pdf) { return "doc.richtext" }
-        if type.conforms(to: .archive) { return "doc.zipper" }
-        if type.conforms(to: .sourceCode) || type.conforms(to: .script) { return "chevron.left.forwardslash.chevron.right" }
-        if type.conforms(to: .text) { return "doc.text" }
-        return "doc"
-    }
 }
 
+@available(iOS 17, *)
 private struct TransferRow: View {
     let transfer: Transfer
     let open: (URL) -> Void
@@ -353,7 +344,7 @@ private struct TransferRow: View {
 }
 
 /// A photo or video from the picker, copied to a temporary file with its original name.
-private struct PickedMedia: Transferable {
+struct PickedMedia: Transferable {
     let url: URL
 
     static var transferRepresentation: some TransferRepresentation {
@@ -381,4 +372,25 @@ struct ShareSheet: UIViewControllerRepresentable {
 
 extension URL: @retroactive Identifiable {
     public var id: String { absoluteString }
+}
+
+// MARK: Shared with the iOS 16 browser (Legacy/)
+
+/// Full files fetched for previews. Temporary: cleared each time a computer's files are opened.
+enum PreviewCache {
+    static var url: URL { URL.cachesDirectory.appending(path: "Previews", directoryHint: .isDirectory) }
+}
+
+enum FileSymbols {
+    static func symbol(for name: String) -> String {
+        guard let type = UTType(filenameExtension: (name as NSString).pathExtension) else { return "doc" }
+        if type.conforms(to: .image) { return "photo" }
+        if type.conforms(to: .movie) || type.conforms(to: .video) { return "film" }
+        if type.conforms(to: .audio) { return "waveform" }
+        if type.conforms(to: .pdf) { return "doc.richtext" }
+        if type.conforms(to: .archive) { return "doc.zipper" }
+        if type.conforms(to: .sourceCode) || type.conforms(to: .script) { return "chevron.left.forwardslash.chevron.right" }
+        if type.conforms(to: .text) { return "doc.text" }
+        return "doc"
+    }
 }

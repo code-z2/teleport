@@ -19,14 +19,15 @@ final class ShareViewController: UIViewController {
             : nil
         // The "Teleport to Mac / Android / iPhone" actions set this in their Info.plist.
         let only = (Bundle.main.object(forInfoDictionaryKey: "TeleportTargetPlatform") as? String).flatMap(Platform.init)
-        let model = SendModel(
+        // iOS 17+ gets the @Observable model, iOS 16 the legacy one (Legacy/).
+        let picker = SendPickerFactory.make(
             preselected: recipient,
             only: only,
             loadClip: { [weak self] in try await ClipExtractor.clip(from: self?.extensionContext?.inputItems ?? []) },
             onSent: { ShareSuggestion.donate(for: $0) },
             finish: { context?.completeRequest(returningItems: nil) })
 
-        let host = UIHostingController(rootView: SendPicker(model: model))
+        let host = UIHostingController(rootView: picker)
         host.view.backgroundColor = .clear
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = false

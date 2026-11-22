@@ -9,6 +9,8 @@ import UserNotifications
 struct TeleportApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
+    init() { Compat.applyLaunchArguments() }
+
     var body: some Scene {
         WindowGroup { ContentView() }
     }
@@ -69,7 +71,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         Task { @MainActor in self.tokenChanged { $0.ownFCMToken = fcmToken } }
     }
 
+    /// Live Activities started by push need iOS 17.2. Without a token, the relay sends iOS 16
+    /// a plain notification (with Copy / Save) instead.
     private func observePushToStartToken() {
+        guard #available(iOS 17.2, *) else { return }
         Task {
             for await data in Activity<ClipActivityAttributes>.pushToStartTokenUpdates {
                 let hex = data.map { String(format: "%02x", $0) }.joined()

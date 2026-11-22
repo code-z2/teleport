@@ -17,6 +17,8 @@ struct ClipActivityAttributes: ActivityAttributes {
     var kind: String
 }
 
+/// Live Activity buttons are iOS 17+. On iOS 16 the notification's Copy / Save actions do this.
+@available(iOS 17, *)
 struct CopyClipIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Copy Clip"
     static let isDiscoverable = false
@@ -42,6 +44,7 @@ struct CopyClipIntent: LiveActivityIntent {
 /// "Save" on the Live Activity for images: adds the image to Photos without opening the app.
 /// Needs add-only Photos access, which the app asks for once it's paired (a background
 /// intent can't show the permission prompt itself).
+@available(iOS 17, *)
 struct SaveClipIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Save Clip to Photos"
     static let isDiscoverable = false

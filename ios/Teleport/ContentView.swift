@@ -8,7 +8,6 @@ import VisionKit
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var teleport: Teleport? = try? Teleport()
-    @State private var clipboardRequest = ClipboardSendRequest.shared
     @State private var name = ""
     @State private var peers: [Peer] = []
     @State private var requests: [PairRequest] = []
@@ -51,7 +50,11 @@ struct ContentView: View {
                             if peer.platform.hasMailbox {
                                 // A Mac's files can be browsed over an end-to-end encrypted session.
                                 NavigationLink {
-                                    MacBrowserRoot(teleport: teleport, mac: peer)
+                                    if #available(iOS 17, *), !Compat.forceLegacy {
+                                        MacBrowserRoot(teleport: teleport, mac: peer)
+                                    } else {
+                                        LegacyMacBrowserRoot(teleport: teleport, mac: peer)  // Legacy/
+                                    }
                                 } label: {
                                     Label {
                                         VStack(alignment: .leading) {
@@ -101,12 +104,10 @@ struct ContentView: View {
                     PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in }
                 }
             }
-            .onChange(of: scenePhase) { _, phase in if phase == .active { reload() } }
+            .onChangeCompat(of: scenePhase) { phase in if phase == .active { reload() } }
             .onReceive(NotificationCenter.default.publisher(for: .teleportPushStateChanged)) { _ in reload() }
             // From the Control Center button (or Siri / Shortcuts): send what's on the clipboard.
-            .sheet(isPresented: $clipboardRequest.pending) {
-                ClipboardSendSheet { clipboardRequest.pending = false }
-            }
+            .clipboardSendSheet()
             .sheet(isPresented: $showingQR) {
                 if let teleport { PairingCodeSheet(teleport: teleport, name: name) }
             }

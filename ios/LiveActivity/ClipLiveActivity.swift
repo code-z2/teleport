@@ -6,12 +6,14 @@ import WidgetKit
 @main
 struct TeleportWidgets: WidgetBundle {
     var body: some Widget {
-        ClipLiveActivity()
-        TeleportClipboardControl()
+        // Started by push (push-to-start), which needs iOS 17.2; iOS 16 gets the notification only.
+        if #available(iOS 17.2, *) { ClipLiveActivity() }
+        if #available(iOS 18, *) { TeleportClipboardControl() }  // Control Center controls are iOS 18+
     }
 }
 
 /// The Control Center button: Edit Controls ▸ Add a Control ▸ Teleport.
+@available(iOS 18, *)
 struct TeleportClipboardControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: "app.teleport.clipboard") {
@@ -26,6 +28,7 @@ struct TeleportClipboardControl: ControlWidget {
 
 /// Started remotely by push-to-start. Shows no plaintext (content-state is ciphertext);
 /// Copy (and Save, for images) run intents in the app process, which decrypt first.
+@available(iOS 17.2, *)
 struct ClipLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: ClipActivityAttributes.self) { context in
@@ -65,6 +68,7 @@ struct ClipLiveActivity: Widget {
 }
 
 /// Copy, plus Save for images (blobs). Both run in the app's process.
+@available(iOS 17.2, *)
 private struct ClipButtons: View {
     let env: String
     let kind: String

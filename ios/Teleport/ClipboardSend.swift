@@ -6,16 +6,16 @@ import UIKit
 /// The sheet the Control Center button opens: what's on the clipboard → a device.
 struct ClipboardSendSheet: View {
     let dismiss: () -> Void
-    @State private var model: SendModel?
+    @State private var picker: AnyView?
 
     var body: some View {
         Group {
-            if let model { SendPicker(model: model) } else { ProgressView() }
+            if let picker { picker } else { ProgressView() }
         }
         .presentationDetents([.medium])
         .onAppear {
-            guard model == nil else { return }
-            model = SendModel(
+            guard picker == nil else { return }
+            picker = SendPickerFactory.make(
                 loadClip: { await Self.readClipboard() },
                 onSent: { ShareSuggestion.donate(for: $0) },
                 finish: dismiss)

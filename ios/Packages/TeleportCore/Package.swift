@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "TeleportCore",
-    platforms: [.iOS(.v18), .macOS(.v15)],
+    platforms: [.iOS(.v16), .macOS(.v15)],
     products: [.library(name: "TeleportCore", targets: ["TeleportCore"])],
     targets: [
         .target(name: "TeleportCore"),

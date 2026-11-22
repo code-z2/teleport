@@ -12,12 +12,18 @@ struct TeleportClipboardIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        ClipboardSendRequest.shared.pending = true
+        if #available(iOS 17, *), !Compat.forceLegacy {
+            ClipboardSendRequest.shared.pending = true
+        } else {
+            ClipboardSendRequestLegacy.shared.pending = true
+        }
         return .result()
     }
 }
 
 /// Set by the intent, watched by the app: show the "send clipboard" sheet.
+/// iOS 16 uses `ClipboardSendRequestLegacy` (Legacy/).
+@available(iOS 17, *)
 @MainActor
 @Observable
 final class ClipboardSendRequest {
