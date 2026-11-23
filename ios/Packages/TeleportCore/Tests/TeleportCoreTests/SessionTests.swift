@@ -338,3 +338,25 @@ private final class Counter: @unchecked Sendable {
     #expect(try await relayed.list("").map(\.name) == ["Documents"])  // still works
     await relayed.close()
 }
+
+@Test func silentEndpointFallsBackToTheRelay() async throws {
+    let f = try Fixture()
+    // Accepts the connection but never answers the handshake.
+    final class Held: @unchecked Sendable { var pipes: [any SessionPipe] = [] }
+    let held = Held()
+    let listener = try LocalListener { pipe in held.pipes.append(pipe) }
+    let port = try await listener.start()
+    defer { listener.stop() }
+
+    let (phoneEnd, macEnd) = MemoryPipe.pair()
+    let phone = f.peer(f.phoneKeys, platform: .ios)
+    let server = FileServer(pipe: macEnd, signer: f.macKeys, mailbox: f.mailbox,
+                            options: .init(home: f.home, showHidden: false, endpoints: ["127.0.0.1:\(port)"]), phones: { _ in phone })
+    Task { await server.run() }
+    let relayed = try await FileSessionClient.handshake(pipe: phoneEnd, signer: f.phoneKeys, mailbox: f.mailbox, macKs: f.macKeys.publicKey)
+    let started = Date()
+    #expect(await relayed.upgrade(signer: f.phoneKeys, mailbox: f.mailbox, macKs: f.macKeys.publicKey, handshakeTimeout: 0.5) == nil)
+    #expect(Date().timeIntervalSince(started) < 3)
+    #expect(try await relayed.list("").map(\.name) == ["Documents"])  // still works
+    await relayed.close()
+}

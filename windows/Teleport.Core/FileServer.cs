@@ -44,6 +44,10 @@ public sealed class FileServer
     /// The phone that opened this session, once verified.
     public Peer? Phone { get; private set; }
 
+    /// Called once, on the session's own task, when the phone is verified: before `RunAsync`
+    /// can return, so whoever lists browsers adds the phone strictly before removing it.
+    public Action<Peer>? Verified { get; init; }
+
     public FileServer(ISessionPipe pipe, ISigningKey signer, string mailbox, Options options, Func<string, Peer?> phones)
     {
         _pipe = pipe; _signer = signer; _mailbox = mailbox; _options = options; _phones = phones;
@@ -104,6 +108,7 @@ public sealed class FileServer
         _tx = new FrameCipher(m2p, SessionCrypto.MacToPhone);
         _rx = new FrameCipher(p2m, SessionCrypto.PhoneToMac);
         Phone = peer;
+        Verified?.Invoke(peer);
         _pipe.Send(Encoding.UTF8.GetBytes(Wire.Serialize(accept)));
         return true;
     }
@@ -466,12 +471,11 @@ public sealed class FileServer
             Fail(c.Id, "hash", "The upload was corrupted in transit.");
             return;
         }
-        // Re-check the name: something may have appeared there meanwhile.
-        var name = File.Exists(Path.Combine(u.Dir, u.Name)) || Directory.Exists(Path.Combine(u.Dir, u.Name)) ? UniqueName(u.Name, u.Dir) : u.Name;
         try
         {
+            // The name may have been taken meanwhile: never replace, pick the next free one.
+            var name = MoveIntoPlace(u.Partial, u.Dir, u.Name);
             var dest = Path.Combine(u.Dir, name);
-            File.Move(u.Partial, dest);
             File.SetAttributes(dest, File.GetAttributes(dest) & ~FileAttributes.Hidden);
             Send(new SessionFrame.Ctl(new Control("saved", c.Id) { Name = name }));
         }
@@ -485,6 +489,26 @@ public sealed class FileServer
     }
 
     /// `name`, or `name (2).ext`, `name (3).ext`… whichever is free.
+    /// Moves a finished temporary file into `dir` as `name`, or "name (2)" etc. if that's
+    /// taken, never replacing anything (even a file that appears at the last moment, such as
+    /// another transfer of the same name finishing first). Returns the name it got.
+    public static string MoveIntoPlace(string temporary, string dir, string name)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            var candidate = UniqueName(name, dir);
+            try
+            {
+                File.Move(temporary, Path.Combine(dir, candidate), overwrite: false);
+                return candidate;
+            }
+            catch (IOException) when (attempt < 20 && (File.Exists(Path.Combine(dir, candidate)) || Directory.Exists(Path.Combine(dir, candidate))))
+            {
+                // Taken between the check and the move: pick again.
+            }
+        }
+    }
+
     public static string UniqueName(string name, string dir)
     {
         bool Taken(string n) => File.Exists(Path.Combine(dir, n)) || Directory.Exists(Path.Combine(dir, n));

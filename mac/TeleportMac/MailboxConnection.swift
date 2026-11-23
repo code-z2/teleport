@@ -204,20 +204,18 @@ final class MailboxConnection {
         let server = FileServer(
             pipe: pipe, signer: teleport.keys.signing, mailbox: teleport.myID,
             options: fileOptions(),
-            phones: { teleport.store.peers[$0] })
+            phones: { teleport.store.peers[$0] },
+            // Shown in the menu once verified. Only fills in a session that's still listed,
+            // so a late update can't bring back one that has already ended.
+            verified: { [weak self] phone in
+                Task { @MainActor [weak self] in
+                    guard let self, self.sessions[sid] != nil else { return }
+                    self.sessions[sid]?.phone = phone.name
+                    self.reportBrowsers()
+                }
+            })
         log.notice("file session opened")
         Task { [weak self] in
-            // Learn who it is once the handshake is through, for the menu.
-            Task { @MainActor [weak self] in
-                for _ in 0..<50 {
-                    if let phone = await server.phone {
-                        self?.sessions[sid]?.phone = phone.name
-                        self?.reportBrowsers()
-                        return
-                    }
-                    try? await Task.sleep(for: .milliseconds(200))
-                }
-            }
             await server.run()
             await MainActor.run {
                 guard let self else { return }
@@ -257,20 +255,20 @@ final class MailboxConnection {
     private func runLocalSession(_ pipe: TCPPipe, teleport: Teleport) {
         let key = UUID()
         localSessions[key] = .some(nil)
-        let server = FileServer(pipe: pipe, signer: teleport.keys.signing, mailbox: teleport.myID,
-                                options: fileOptions(), phones: { teleport.store.peers[$0] })
+        let server = FileServer(
+            pipe: pipe, signer: teleport.keys.signing, mailbox: teleport.myID,
+            options: fileOptions(), phones: { teleport.store.peers[$0] },
+            // Only fills in a session that's still open: assigning by key would otherwise
+            // add back one that ended first, leaving the phone listed as browsing for good.
+            verified: { [weak self] phone in
+                Task { @MainActor [weak self] in
+                    guard let self, self.localSessions.keys.contains(key) else { return }
+                    self.localSessions[key] = .some(phone.name)
+                    self.reportBrowsers()
+                }
+            })
         log.notice("direct file session opened")
         Task { [weak self] in
-            Task { @MainActor [weak self] in
-                for _ in 0..<50 {
-                    if let phone = await server.phone {
-                        self?.localSessions[key] = phone.name
-                        self?.reportBrowsers()
-                        return
-                    }
-                    try? await Task.sleep(for: .milliseconds(200))
-                }
-            }
             await server.run()
             await MainActor.run {
                 self?.localSessions[key] = nil

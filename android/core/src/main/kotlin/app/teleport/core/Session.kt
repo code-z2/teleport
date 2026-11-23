@@ -440,15 +440,32 @@ class SocketPipe private constructor(private val socket: java.net.Socket) : Sess
         }
 
         /** Tries [hosts] ("ip:port") in turn; the first that connects and completes a handshake. */
-        fun upgrade(hosts: List<String>, signer: SigningKey, mailbox: String, macKs: ByteArray): FileSessionClient? {
+        fun upgrade(
+            hosts: List<String>, signer: SigningKey, mailbox: String, macKs: ByteArray, handshakeTimeoutMs: Long = 3000,
+        ): FileSessionClient? {
             for (hp in hosts) {
                 val parts = hp.split(":")
                 val port = parts.getOrNull(1)?.toIntOrNull() ?: continue
                 val pipe = runCatching { connect(parts[0], port) }.getOrNull() ?: continue
+                // Connecting only proves something is listening. If it never answers the
+                // handshake, give up after a few seconds and stay on the relay: closing the
+                // socket ends the handshake's wait. Whichever settles first wins.
+                val settled = java.util.concurrent.atomic.AtomicBoolean(false)
+                val watchdog = Thread {
+                    try {
+                        Thread.sleep(handshakeTimeoutMs)
+                        if (settled.compareAndSet(false, true)) pipe.close()
+                    } catch (e: InterruptedException) { }
+                }.apply { isDaemon = true; start() }
                 try {
-                    return FileSessionClient.handshake(pipe, signer, mailbox, macKs)
+                    val client = FileSessionClient.handshake(pipe, signer, mailbox, macKs)
+                    if (settled.compareAndSet(false, true)) return client
+                    client.close()  // timed out just as it answered
                 } catch (e: Exception) {
+                    settled.set(true)
                     pipe.close()
+                } finally {
+                    watchdog.interrupt()
                 }
             }
             return null

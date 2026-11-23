@@ -405,12 +405,11 @@ public sealed class AppModel : IAsyncDisposable
         var downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Teleport");
         Directory.CreateDirectory(downloads);
         var name = string.Concat((p.Name ?? $"File from {from.Name}").Split(Path.GetInvalidFileNameChars()));
-        var dest = Path.Combine(downloads, FileServer.UniqueName(name, downloads));
         Say($"Receiving {name} from {from.Name}…");
         try
         {
             var last = DateTime.MinValue;
-            await t.DownloadFileAsync(p, dest, (done, total) =>
+            var dest = await t.DownloadFileAsync(p, downloads, name, (done, total) =>
             {
                 if ((DateTime.UtcNow - last).TotalMilliseconds < 300 && done < total) return;
                 last = DateTime.UtcNow;

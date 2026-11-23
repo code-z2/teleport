@@ -3,7 +3,9 @@ import Foundation
 /// Incoming photos and files on an iPhone, shared by the notification extension (which
 /// records them and starts the download), the app (which finishes, decrypts and saves) and
 /// the Live Activity widget (which shows names, progress and buttons). One folder per
-/// envelope in the App Group: `inbox/<id>/item.json` plus the decrypted file.
+/// envelope in the App Group: `inbox/<id>/item.json` (the record), `blob.enc` (the download,
+/// while decrypting) and `files/<name>` (the decrypted file, in a folder of its own so no file
+/// name can land on the record or the download).
 public struct InboxItem: Codable, Sendable, Equatable {
     public enum State: String, Codable, Sendable { case downloading, ready, failed, cancelled }
 
@@ -35,10 +37,21 @@ public struct Inbox: Sendable {
         root = base.appending(path: "inbox", directoryHint: .isDirectory)
     }
 
+    /// An inbox at `root` (tests).
+    init(root: URL) { self.root = root }
+
     public func folder(_ id: String) -> URL { root.appending(path: id, directoryHint: .isDirectory) }
 
     /// Where the decrypted file lives once ready.
-    public func file(_ item: InboxItem) -> URL { folder(item.id).appending(path: item.name.replacingOccurrences(of: "/", with: "-")) }
+    public func file(_ item: InboxItem) -> URL {
+        folder(item.id).appending(path: "files", directoryHint: .isDirectory).appending(path: Self.safeName(item.name))
+    }
+
+    /// A name that stays inside its folder ("a/b" can't make subfolders, ".." can't climb out).
+    static func safeName(_ name: String) -> String {
+        let flat = name.replacingOccurrences(of: "/", with: "-")
+        return flat.isEmpty || flat == "." || flat == ".." ? "file" : flat
+    }
 
     /// Where a background download leaves the ciphertext before decrypting.
     public func ciphertext(_ id: String) -> URL { folder(id).appending(path: "blob.enc") }
@@ -56,7 +69,8 @@ public struct Inbox: Sendable {
     public func put(_ item: InboxItem) {
         var copy = item
         copy.updated = Date()
-        try? FileManager.default.createDirectory(at: folder(item.id), withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: folder(item.id).appending(path: "files", directoryHint: .isDirectory),
+                                                 withIntermediateDirectories: true)
         if let data = try? JSONEncoder().encode(copy) {
             try? data.write(to: folder(item.id).appending(path: "item.json"), options: .atomic)
         }

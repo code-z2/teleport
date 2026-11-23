@@ -136,4 +136,16 @@ class SessionTest {
         }
         assertEquals("untrusted", e.code)
     }
+
+    @Test fun silentEndpointIsAbandoned() {
+        // Accepts the connection but never answers the handshake.
+        val server = java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())
+        val held = mutableListOf<java.net.Socket>()
+        thread(isDaemon = true) { runCatching { while (true) held += server.accept() } }
+        val started = System.currentTimeMillis()
+        val client = SocketPipe.upgrade(listOf("127.0.0.1:${server.localPort}"), phoneKs, "rcAUFPmhXeQ", macKs.publicKey, handshakeTimeoutMs = 500)
+        assertEquals(null, client)
+        assert(System.currentTimeMillis() - started < 3000)
+        server.close()
+    }
 }

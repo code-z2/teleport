@@ -39,18 +39,29 @@ public actor FileSessionClient {
 
     /// Asks the computer for its local addresses (over this session, so they're authentic)
     /// and tries each briefly. A new session with its own handshake, or nil.
-    func upgrade(signer: any SigningKey, mailbox: String, macKs: Data) async -> FileSessionClient? {
+    func upgrade(signer: any SigningKey, mailbox: String, macKs: Data, handshakeTimeout: TimeInterval = 3) async -> FileSessionClient? {
         guard let hosts = try? await endpoints(), !hosts.isEmpty else { return nil }
         for hostPort in hosts {
             let parts = hostPort.split(separator: ":")
             guard parts.count == 2, let port = UInt16(parts[1]) else { continue }
             do {
                 let pipe = try await TCPPipe.connect(host: String(parts[0]), port: port)
+                // Connecting only proves something is listening. If it never answers the
+                // handshake, give up after a few seconds and stay on the relay: closing the
+                // pipe ends the handshake's wait. Whichever settles first wins.
+                let settled = OnceFlag()
+                let watchdog = Task {
+                    try? await Task.sleep(nanoseconds: UInt64(handshakeTimeout * 1_000_000_000))
+                    if !Task.isCancelled, settled.set() { pipe.close() }
+                }
+                defer { watchdog.cancel() }
                 do {
                     let client = try await Self.handshake(pipe: pipe, signer: signer, mailbox: mailbox, macKs: macKs)
+                    guard settled.set() else { await client.close(); continue }  // timed out just now
                     await client.markDirect()
                     return client
                 } catch {
+                    _ = settled.set()
                     pipe.close()
                 }
             } catch {

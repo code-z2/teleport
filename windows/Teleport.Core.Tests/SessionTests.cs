@@ -217,6 +217,24 @@ public class FileServerTests : IDisposable
     }
 
     [Fact]
+    public async Task VerifiedIsReportedBeforeTheSessionEnds()
+    {
+        // A phone that connects and leaves at once is still reported in order: verified,
+        // then ended. Polling for the phone could report it after the session had ended.
+        MemPipe phoneEnd = new(), pcEnd = new();
+        phoneEnd.Peer = pcEnd; pcEnd.Peer = phoneEnd;
+        var phonePeer = new Peer("Phone", "ios", B64.Url(new SoftwareAgreementKey().PublicKey), B64.Url(_phoneKs.PublicKey));
+        var events = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var server = new FileServer(pcEnd, _pcKs, Mailbox, new FileServer.Options(_home, false), id => phonePeer)
+        { Verified = p => events.Enqueue("verified " + p.Name) };
+        var run = Task.Run(async () => { await server.RunAsync(); events.Enqueue("ended"); });
+        await Phone.ConnectAsync(phoneEnd, _phoneKs, Mailbox, _pcKs.PublicKey);
+        phoneEnd.Close();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(["verified Phone", "ended"], events.ToArray());
+    }
+
+    [Fact]
     public async Task UnknownPhoneIsRefused()
     {
         var e = await Assert.ThrowsAsync<InvalidOperationException>(() => ConnectAsync(trusted: false));

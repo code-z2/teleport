@@ -41,11 +41,15 @@ public actor FileServer {
     /// The phone that opened this session, once it's verified.
     public private(set) var phone: Peer?
 
-    /// - Parameter phones: looks up a paired phone by fingerprint.
+    private let verified: (@Sendable (Peer) -> Void)?
+
+    /// - Parameters:
+    ///   - phones: looks up a paired phone by fingerprint.
+    ///   - verified: called once when the phone is verified, before `run()` can return.
     public init(pipe: any SessionPipe, signer: any SigningKey, mailbox: String, options: Options,
-                phones: @escaping @Sendable (String) -> Peer?) {
+                phones: @escaping @Sendable (String) -> Peer?, verified: (@Sendable (Peer) -> Void)? = nil) {
         self.pipe = pipe; self.signer = signer; self.mailbox = mailbox
-        self.options = options; self.phones = phones
+        self.options = options; self.phones = phones; self.verified = verified
         self.homeReal = options.home.resolvingSymlinksInPath()
     }
 
@@ -100,6 +104,7 @@ public actor FileServer {
         tx = FrameCipher(key: keys.macToPhone, dir: SessionCrypto.macToPhone)
         rx = FrameCipher(key: keys.phoneToMac, dir: SessionCrypto.phoneToMac)
         phone = peer
+        verified?(peer)
         pipe.send(try JSONEncoder().encode(accept))
         return true
     }

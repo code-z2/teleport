@@ -21,7 +21,7 @@ android {
 
     defaultConfig {
         applicationId = teleport.getProperty("applicationId", "com.peteranyaogu.teleport")
-        minSdk = 31 // Keystore ECDH (PURPOSE_AGREE_KEY)
+        minSdk = 33 // Android 13: InputStream.readNBytes (and Keystore ECDH, from 12)
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"

@@ -59,16 +59,14 @@ public sealed class MailboxConnection : IAsyncDisposable
             _local = new LocalListener(pipe =>
             {
                 var key = "local-" + Guid.NewGuid().ToString("N");
+                // Listed the moment the phone is verified, from the session itself, so it's
+                // always added before the removal below (a poll could add it back afterwards).
                 var server = new FileServer(pipe, _teleport.Signing, _teleport.MyId, Options(),
-                    id => _teleport.Store.Peers.GetValueOrDefault(id)) { Thumbnailer = Thumbnailer };
+                    id => _teleport.Store.Peers.GetValueOrDefault(id))
+                { Thumbnailer = Thumbnailer, Verified = phone => ReportBrowsers(key, phone.Name) };
                 Log?.Invoke("direct file session opened");
                 _ = Task.Run(async () =>
                 {
-                    _ = Task.Run(async () =>
-                    {
-                        for (var i = 0; i < 50 && server.Phone is null; i++) await Task.Delay(200);
-                        if (server.Phone is { } phone) ReportBrowsers(key, phone.Name);
-                    });
                     await server.RunAsync();
                     ReportBrowsers(key, null);
                     Log?.Invoke("direct file session closed");
@@ -229,15 +227,11 @@ public sealed class MailboxConnection : IAsyncDisposable
         var pipe = new MailboxSessionPipe(this, sid, raw);
         _sessions[sid] = pipe;
         var server = new FileServer(pipe, _teleport.Signing, _teleport.MyId, Options(),
-            id => _teleport.Store.Peers.GetValueOrDefault(id)) { Thumbnailer = Thumbnailer };
+            id => _teleport.Store.Peers.GetValueOrDefault(id))
+        { Thumbnailer = Thumbnailer, Verified = phone => ReportBrowsers(sid, phone.Name) };
         Log?.Invoke("file session opened");
         _ = Task.Run(async () =>
         {
-            var watch = Task.Run(async () =>
-            {
-                for (var i = 0; i < 50 && server.Phone is null; i++) await Task.Delay(200);
-                if (server.Phone is { } phone && _sessions.ContainsKey(sid)) ReportBrowsers(sid, phone.Name);
-            });
             await server.RunAsync();
             _sessions.TryRemove(sid, out _);
             ReportBrowsers(sid, null);
@@ -254,15 +248,22 @@ public sealed class MailboxConnection : IAsyncDisposable
 
     private void EndSessions()
     {
-        foreach (var (sid, pipe) in _sessions) { pipe.Finish(); _sessions.TryRemove(sid, out _); }
-        _browsers.Clear();
-        BrowsersChanged?.Invoke([]);
+        // Only the relayed sessions end here: direct (Wi-Fi) sessions don't go through the
+        // relay and keep serving, so their phones stay listed as browsing.
+        foreach (var (sid, pipe) in _sessions) { pipe.Finish(); _sessions.TryRemove(sid, out _); ReportBrowsers(sid, null); }
     }
 
+    private readonly object _browsersLock = new();
+
+    // One at a time, so a change and the list it publishes stay together (two sessions
+    // changing at once can't publish an outdated list last).
     private void ReportBrowsers(string sid, string? name)
     {
-        if (name is null) _browsers.TryRemove(sid, out _); else _browsers[sid] = name;
-        BrowsersChanged?.Invoke([.. _browsers.Values.Distinct().Order()]);
+        lock (_browsersLock)
+        {
+            if (name is null) _browsers.TryRemove(sid, out _); else _browsers[sid] = name;
+            BrowsersChanged?.Invoke([.. _browsers.Values.Distinct().Order()]);
+        }
     }
 
     /// Closes sessions with no traffic for 5 minutes, so a phone that vanished can't stay "browsing".

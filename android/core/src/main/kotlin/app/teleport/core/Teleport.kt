@@ -240,7 +240,11 @@ class Teleport(
             val buf = ByteArray(ChunkedBlob.CHUNK)
             for (i in 0 until chunks) {
                 if (cancelled()) throw java.util.concurrent.CancellationException()
-                val read = input.readNBytes(buf, 0, buf.size)
+                // Exactly the bytes the pointer will declare: a stream shorter or longer than
+                // [size] would arrive as a file the recipient can't open, so fail here instead.
+                val want = if (i == chunks - 1) (size - i.toLong() * ChunkedBlob.CHUNK).toInt() else ChunkedBlob.CHUNK
+                val read = input.readNBytes(buf, 0, want)
+                if (read != want) throw java.io.IOException("The file is shorter than its stated size.")
                 pending.write(ChunkedBlob.seal(buf.copyOf(read), i, i == chunks - 1, key, n))
                 // Equal-sized parts (R2 requires it); the remainder goes last.
                 while (pending.size() >= ChunkedBlob.PART) {
@@ -250,6 +254,7 @@ class Teleport(
                     pending.write(all, ChunkedBlob.PART, all.size - ChunkedBlob.PART)
                 }
             }
+            if (input.read() != -1) throw java.io.IOException("The file is longer than its stated size.")
             if (pending.size() > 0 || etags.isEmpty()) flush(pending.toByteArray())
             relay.completeUpload(upload, etags)
         } catch (e: Exception) {

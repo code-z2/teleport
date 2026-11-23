@@ -179,22 +179,27 @@ public sealed class TeleportClient(IAgreementKey agreement, ISigningKey signing,
         await relay.SendAsync(TeleportCrypto.Seal(Kind.Blob, Encoding.UTF8.GetBytes(Wire.Serialize(pointer)), signing, to.KaBytes), to, ct, hint: "file");
     }
 
-    /// Downloads a chunked blob to a temporary file, decrypts it into `destination` a chunk at
-    /// a time, then deletes it from the relay.
-    public async Task DownloadFileAsync(BlobPointer p, string destination, Action<long, long>? progress = null, CancellationToken ct = default)
+    /// Downloads a chunked blob to a temporary file, decrypts it a chunk at a time into a
+    /// temporary file of its own in `directory`, then moves that into place as `name` (or
+    /// "name (2)"…, never replacing an existing file) and deletes the blob from the relay.
+    /// Returns the full path it was saved as.
+    public async Task<string> DownloadFileAsync(BlobPointer p, string directory, string name, Action<long, long>? progress = null, CancellationToken ct = default)
     {
         if (p.C is not { } chunk || chunk <= 0 || p.Size > MaxFileBytes) throw new OpenException("encoding");
         var key = B64.FromUrl(p.Key);
         var n = B64.FromUrl(p.N);
         var scratch = Path.GetTempFileName();
-        var partial = destination + ".teleport-part";
+        // Unique per receive, and created exclusively: two files of the same name arriving at
+        // once never share (or truncate) each other's temporary file.
+        var partial = Path.Combine(directory, $".teleport-{Guid.NewGuid():N}.part");
+        string saved;
         try
         {
             await using (var file = File.Create(scratch)) await relay.DownloadBlobAsync(p.Id, file, progress, ct);
             var chunks = ChunkedBlob.Count(p.Size, chunk);
             if (new FileInfo(scratch).Length != p.Size + 16L * chunks) throw new OpenException("decrypt");
             await using (var input = File.OpenRead(scratch))
-            await using (var output = File.Create(partial))
+            await using (var output = new FileStream(partial, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
                 for (var i = 0; i < chunks; i++)
                 {
@@ -205,7 +210,7 @@ public sealed class TeleportClient(IAgreementKey agreement, ISigningKey signing,
                     output.Write(ChunkedBlob.Open(sealedChunk, i, i == chunks - 1, key, n));
                 }
             }
-            File.Move(partial, destination, overwrite: true);
+            saved = Path.Combine(directory, FileServer.MoveIntoPlace(partial, directory, name));
         }
         finally
         {
@@ -213,6 +218,7 @@ public sealed class TeleportClient(IAgreementKey agreement, ISigningKey signing,
             if (File.Exists(partial)) File.Delete(partial);
         }
         try { await relay.DeleteBlobAsync(p.Id); } catch (Exception) { }
+        return saved;
     }
 
     // ---------- receive ----------

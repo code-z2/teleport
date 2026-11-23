@@ -17,6 +17,8 @@ import android.text.format.Formatter
 import app.teleport.core.BlobPointer
 import app.teleport.core.ChunkedBlob
 import app.teleport.core.OfflineException
+import app.teleport.core.Teleport
+import app.teleport.core.TooLargeException
 import app.teleport.core.TeleportJson
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -114,16 +116,35 @@ class TransferService : Service() {
         val (name, size) = describe(uri)
         val mime = intent.type ?: contentResolver.getType(uri) ?: "application/octet-stream"
         val title = "Sending $name to ${peer.name}"
+        var spooled: File? = null
         val message = try {
-            contentResolver.openInputStream(uri)!!.use { input ->
-                teleport.sendFile(input, size, mime, name, peer) { sent, total -> update(id, title, sent, total) }
+            if (size != null) {
+                contentResolver.openInputStream(uri)!!.use { input ->
+                    teleport.sendFile(input, size, mime, name, peer) { sent, total -> update(id, title, sent, total) }
+                }
+            } else {
+                // The sharing app didn't say how big it is (not the same as empty): copy it
+                // here first, up to the limit, so the size we declare is the size we send.
+                update(id, title, 0, 0)
+                val copy = File.createTempFile("send-", ".part", cacheDir).also { spooled = it }
+                val copied = contentResolver.openInputStream(uri)!!.use { input ->
+                    copy.outputStream().use { out -> copyAtMost(input, out, Teleport.MAX_FILE_BYTES + 1) }
+                }
+                if (copied > Teleport.MAX_FILE_BYTES) throw TooLargeException()
+                copy.inputStream().use { input ->
+                    teleport.sendFile(input, copied, mime, name, peer) { sent, total -> update(id, title, sent, total) }
+                }
             }
             PeerShortcut.publish(this, peer)
             "Sent $name to ${peer.name}"
         } catch (e: OfflineException) {
             "${peer.name} is offline"
+        } catch (e: TooLargeException) {
+            "$name is over 250 MB"
         } catch (e: Exception) {
             "Couldn't send $name: ${e.message}"
+        } finally {
+            spooled?.delete()
         }
         done(id, message, null)
     }
@@ -222,13 +243,27 @@ class TransferService : Service() {
         nm.notify(id + 10_000, builder.build())
     }
 
-    private fun describe(uri: Uri): Pair<String, Long> {
+    /** Name and size; the size is null when the provider doesn't say (unknown, not empty). */
+    private fun describe(uri: Uri): Pair<String, Long?> {
         contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
             if (c.moveToFirst()) {
-                return (c.getString(0)?.replace('/', '-') ?: "file") to (if (c.isNull(1)) 0L else c.getLong(1))
+                return (c.getString(0)?.replace('/', '-') ?: "file") to (if (c.isNull(1)) null else c.getLong(1))
             }
         }
-        return (uri.lastPathSegment ?: "file") to 0L
+        return (uri.lastPathSegment ?: "file") to null
+    }
+
+    /** Copies up to [limit] bytes; returns how many (reaching [limit] means there may be more). */
+    private fun copyAtMost(input: java.io.InputStream, out: java.io.OutputStream, limit: Long): Long {
+        val buf = ByteArray(1 shl 16)
+        var total = 0L
+        while (total < limit) {
+            val n = input.read(buf, 0, minOf(buf.size.toLong(), limit - total).toInt())
+            if (n < 0) break
+            out.write(buf, 0, n)
+            total += n
+        }
+        return total
     }
 }
 

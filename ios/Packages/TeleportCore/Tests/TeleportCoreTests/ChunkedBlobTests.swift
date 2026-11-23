@@ -63,3 +63,30 @@ private func b(_ s: String) -> Data { Data(base64URL: s)! }
     let url = relay.request(relay.uploadPath(upload) + "/1", method: "PUT").url!.absoluteString
     #expect(url == "https://relay.test/v1/blob/upload/hSiXKYWuM-_40HPJ_gF_Bw/ADZnPx-xJRn3_e20Y2DoLQ/1")
 }
+
+/// Received files named like the inbox's own files (the record, the download) must not
+/// replace them: each ends up intact, and the item can still be found.
+@Test(arguments: ["blob.enc", "item.json", "..", ""])
+func inboxFileNamesNeverCollide(name: String) throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: "inbox-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let inbox = Inbox(root: root)
+    let id = UUID().uuidString
+    let plain = Data((0..<(ChunkedBlob.chunkSize + 77)).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+    let keyData = Data.random(32), n = Data.random(12)
+    let item = InboxItem(id: id, env: "{}", name: name, mime: "application/octet-stream", size: plain.count, from: "Mac", state: .downloading)
+    inbox.put(item)
+    defer { inbox.remove(id) }
+
+    // What InboxDownloads does: ciphertext to blob.enc, decrypt into place, drop the ciphertext.
+    try ChunkedBlob.seal(plain, key: SymmetricKey(data: keyData), n: n).write(to: inbox.ciphertext(id))
+    let pointer = BlobPointer(id: "b", mime: item.mime, size: plain.count, key: keyData.base64URL, n: n.base64URL, c: ChunkedBlob.chunkSize, name: name)
+    let destination = inbox.file(item)
+    #expect(destination.deletingLastPathComponent().standardizedFileURL.path.hasPrefix(inbox.folder(id).standardizedFileURL.path))
+    try Teleport.decryptFile(pointer, ciphertext: inbox.ciphertext(id), to: destination)
+    try FileManager.default.removeItem(at: inbox.ciphertext(id))
+    inbox.update(id) { $0.state = .ready }
+
+    #expect(try Data(contentsOf: inbox.file(item)) == plain)
+    #expect(inbox.item(id)?.state == .ready)
+}
