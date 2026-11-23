@@ -7,13 +7,26 @@ import UniformTypeIdentifiers
 enum Pasteboard {
     /// What's on a pasteboard (the clipboard by default, or a Services selection):
     /// an image if there is one, otherwise text.
-    static func read(_ pb: NSPasteboard = .general) -> Clip? {
-        // A copied image file in Finder: send the file's bytes.
-        if let url = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?.first,
-           let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image),
-           let data = try? Data(contentsOf: url) {
-            return portableImage(data, type: type)
+    static func read(_ pb: NSPasteboard = .general) -> Outgoing? {
+        // A file copied or selected in Finder: small images go as images (they land on the
+        // other device's clipboard); anything else, up to 250 MB, goes as a file.
+        if let url = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?.first {
+            return outgoing(file: url)
         }
+        return readClip(pb).map(Outgoing.clip)
+    }
+
+    /// A file from Finder (copy, Services or Share).
+    static func outgoing(file url: URL) -> Outgoing? {
+        guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey]), values.isDirectory != true else { return nil }
+        let type = UTType(filenameExtension: url.pathExtension)
+        if let type, type.conforms(to: .image), (values.fileSize ?? .max) + 16 <= Teleport.maxBlobBytes, let data = try? Data(contentsOf: url) {
+            return .clip(portableImage(data, type: type))
+        }
+        return .file(url, mime: type?.preferredMIMEType ?? "application/octet-stream", name: url.lastPathComponent)
+    }
+
+    private static func readClip(_ pb: NSPasteboard) -> Clip? {
         if let data = pb.data(forType: .png) { return .image(data, mime: "image/png") }
         if let data = pb.data(forType: NSPasteboard.PasteboardType(UTType.jpeg.identifier)) { return .image(data, mime: "image/jpeg") }
         if let string = pb.string(forType: .string), !string.isEmpty { return .text(string) }

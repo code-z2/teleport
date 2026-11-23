@@ -212,9 +212,75 @@ public struct BlobPointer: Codable, Equatable, Sendable {
     public var size: Int
     public var key: String
     public var n: String
+    /// Plaintext chunk size of a chunked (large) blob; nil for the single-box format.
+    public var c: Int?
+    /// The original file name, for files.
+    public var name: String?
 
-    public init(id: String, mime: String, size: Int, key: String, n: String) {
-        self.id = id; self.mime = mime; self.size = size; self.key = key; self.n = n
+    public init(id: String, mime: String, size: Int, key: String, n: String, c: Int? = nil, name: String? = nil) {
+        self.id = id; self.mime = mime; self.size = size; self.key = key; self.n = n; self.c = c; self.name = name
+    }
+
+    public var isChunked: Bool { c != nil }
+}
+
+/// Large blobs (SPEC.md "Large blobs"): AES-GCM per chunk, with the chunk index and a
+/// final-chunk marker authenticated, so the stream can't be reordered or cut short.
+public enum ChunkedBlob {
+    public static let chunkSize = 4 * 1024 * 1024
+    public static let maxSize = 250 * 1024 * 1024
+    /// Multipart upload part size (R2 needs equal parts, ≥ 5 MiB, except the last).
+    public static let partSize = 16 * 1024 * 1024
+
+    public static func count(size: Int, chunk: Int = chunkSize) -> Int { max(1, (size + chunk - 1) / chunk) }
+
+    static func nonce(_ n: Data, _ i: Int) -> Data {
+        var out = Data(n)
+        let tail = out[4..<12].reduce(UInt64(0)) { $0 << 8 | UInt64($1) } ^ UInt64(i)
+        out.replaceSubrange(4..<12, with: withUnsafeBytes(of: tail.bigEndian) { Data($0) })
+        return out
+    }
+
+    static func aad(_ i: Int, last: Bool) -> Data {
+        TeleportCrypto.blobAAD + withUnsafeBytes(of: UInt64(i).bigEndian) { Data($0) } + Data([last ? 1 : 0])
+    }
+
+    public static func seal(_ chunk: Data, index: Int, last: Bool, key: SymmetricKey, n: Data) throws -> Data {
+        let box = try AES.GCM.seal(chunk, using: key, nonce: .init(data: nonce(n, index)), authenticating: aad(index, last: last))
+        return box.ciphertext + box.tag
+    }
+
+    public static func open(_ sealed: Data, index: Int, last: Bool, key: SymmetricKey, n: Data) throws -> Data {
+        guard sealed.count >= 16 else { throw OpenError.decrypt }
+        do {
+            let box = try AES.GCM.SealedBox(nonce: .init(data: nonce(n, index)), ciphertext: sealed.dropLast(16), tag: sealed.suffix(16))
+            return try AES.GCM.open(box, using: key, authenticating: aad(index, last: last))
+        } catch {
+            throw OpenError.decrypt
+        }
+    }
+
+    /// Whole-buffer helpers (tests, small inputs).
+    public static func seal(_ bytes: Data, key: SymmetricKey, n: Data, chunk: Int = chunkSize) throws -> Data {
+        let total = count(size: bytes.count, chunk: chunk)
+        var out = Data()
+        for i in 0..<total {
+            let lo = bytes.startIndex + i * chunk, hi = min(lo + chunk, bytes.endIndex)
+            out += try seal(Data(bytes[lo..<hi]), index: i, last: i == total - 1, key: key, n: n)
+        }
+        return out
+    }
+
+    public static func open(_ ct: Data, size: Int, key: SymmetricKey, n: Data, chunk: Int = chunkSize) throws -> Data {
+        let total = count(size: size, chunk: chunk)
+        guard ct.count == size + 16 * total else { throw OpenError.decrypt }
+        var out = Data(), offset = ct.startIndex
+        for i in 0..<total {
+            let plain = i == total - 1 ? size - i * chunk : chunk
+            out += try open(Data(ct[offset..<offset + plain + 16]), index: i, last: i == total - 1, key: key, n: n)
+            offset += plain + 16
+        }
+        return out
     }
 }
 

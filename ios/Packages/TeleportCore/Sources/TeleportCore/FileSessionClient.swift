@@ -150,22 +150,48 @@ public actor FileSessionClient {
         throw FileSessionError.closed
     }
 
-    /// Downloads `path` into `destination` (replaced if present). Cancel the calling task to stop.
+    /// Where an interrupted download of `destination` is kept, so the next try resumes.
+    public static func partialURL(for destination: URL) -> URL {
+        destination.deletingLastPathComponent().appending(path: ".\(destination.lastPathComponent).teleport-part")
+    }
+
+    /// Downloads `path` into `destination` (replaced if present). If an earlier attempt was cut
+    /// off (the connection dropped), it resumes from where that one stopped: the bytes already
+    /// here are hashed again and the computer sends only the rest. Cancel the calling task to
+    /// stop (that discards the partial file; a dropped connection keeps it).
+    /// `keepPartialOnCancel`: previews keep what they have when you leave, so reopening resumes.
     public func download(
-        _ path: String, to destination: URL,
+        _ path: String, to destination: URL, keepPartialOnCancel: Bool = false,
         progress: @escaping @Sendable (_ done: Int64, _ total: Int64) -> Void = { _, _ in }
     ) async throws {
-        let (id, stream) = try begin { var c = Control("download", id: $0); c.path = path; return c }
-        let partial = destination.deletingLastPathComponent().appending(path: ".\(UUID().uuidString).part")
+        let partial = Self.partialURL(for: destination)
+        var hasher = SHA256()
+        var offset: Int64 = 0
+        if FileManager.default.fileExists(atPath: partial.path), let input = try? FileHandle(forReadingFrom: partial) {
+            while let chunk = try input.read(upToCount: 4 * 1024 * 1024), !chunk.isEmpty {
+                hasher.update(data: chunk)
+                offset += Int64(chunk.count)
+            }
+            try? input.close()
+        } else {
+            FileManager.default.createFile(atPath: partial.path, contents: nil)
+        }
+        let start = offset
+        let (id, stream) = try begin { var c = Control("download", id: $0); c.path = path; c.offset = start; return c }
         var finished = false
         defer {
-            if !finished { cancelRemote(id); try? FileManager.default.removeItem(at: partial) } else { end(id) }
+            if finished {
+                end(id)
+            } else {
+                cancelRemote(id)
+                // Keep what we have unless it was a deliberate cancel or the bytes were wrong.
+                if Task.isCancelled && !keepPartialOnCancel { try? FileManager.default.removeItem(at: partial) }
+            }
         }
-        FileManager.default.createFile(atPath: partial.path, contents: nil)
         let handle = try FileHandle(forWritingTo: partial)
         defer { try? handle.close() }
-        var hasher = SHA256()
-        var total: Int64 = 0, received: Int64 = 0, acked: Int64 = 0
+        try handle.seekToEnd()
+        var total: Int64 = 0, received = offset, acked = offset
 
         for try await frame in stream {
             try Task.checkCancellation()
@@ -185,10 +211,18 @@ public actor FileSessionClient {
                 switch c.op {
                 case "meta":
                     total = c.size ?? 0
-                    progress(0, total)
+                    if start > total {
+                        // The file shrank since: start over.
+                        try? FileManager.default.removeItem(at: partial)
+                        throw FileSessionError.closed
+                    }
+                    progress(received, total)
                 case "done":
                     try handle.close()
-                    guard Data(hasher.finalize()).base64URL == c.sha256 else { throw FileSessionError.hashMismatch }
+                    guard Data(hasher.finalize()).base64URL == c.sha256 else {
+                        try? FileManager.default.removeItem(at: partial)  // changed on the computer: next try starts fresh
+                        throw FileSessionError.hashMismatch
+                    }
                     _ = try? FileManager.default.removeItem(at: destination)
                     try FileManager.default.moveItem(at: partial, to: destination)
                     finished = true
@@ -200,6 +234,24 @@ public actor FileSessionClient {
             }
         }
         try Task.checkCancellation()
+        throw failure ?? FileSessionError.closed
+    }
+
+    /// Up to 2 MiB of `path` from `offset` (streaming: a player asks for what it needs next).
+    public func read(_ path: String, offset: Int64, length: Int) async throws -> Data {
+        let (id, stream) = try begin {
+            var c = Control("read", id: $0); c.path = path; c.offset = offset; c.size = Int64(min(length, SessionCrypto.maxRead)); return c
+        }
+        defer { end(id) }
+        var data = Data()
+        for try await frame in stream {
+            switch frame {
+            case .data(_, let bytes): data.append(bytes)
+            case .control(let c):
+                try Self.check(c)
+                if c.op == "done" { return data }
+            }
+        }
         throw failure ?? FileSessionError.closed
     }
 

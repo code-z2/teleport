@@ -52,6 +52,7 @@ class ClipboardSendActivity : ShareActivity() {
         super.onWindowFocusChanged(hasFocus)
         if (!hasFocus || handled) return
         handled = true
+        largeClipboardFile()?.let { (uri, mime) -> return deliverFile(uri, mime) }
         val clip = readClipboard()
         if (clip == null) {
             toast("Nothing copied to teleport")
@@ -61,6 +62,16 @@ class ClipboardSendActivity : ShareActivity() {
         deliver(clip)
     }
 
+    /** A copied image too big for the clipboard path, or a copied file: sent as a file. */
+    private fun largeClipboardFile(): Pair<android.net.Uri, String>? {
+        val uri = getSystemService(ClipboardManager::class.java)?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri ?: return null
+        val mime = contentResolver.getType(uri) ?: return null
+        val size = sizeOf(uri)
+        if (!isLargeOrFile(mime, size)) return null
+        if (tooLargeToSend(size)) { toast("Too large (max 250 MB)"); finish(); return null }
+        return uri to mime
+    }
+
     private fun readClipboard(): Clip? {
         val item = getSystemService(ClipboardManager::class.java)?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0) ?: return null
         item.uri?.let { uri ->
@@ -68,7 +79,7 @@ class ClipboardSendActivity : ShareActivity() {
             if (type?.startsWith("image/") == true) {
                 val bytes = runCatching { contentResolver.openInputStream(uri)?.use { it.readNBytes(Teleport.MAX_BLOB_BYTES - 16 + 1) } }.getOrNull()
                 if (bytes != null && bytes.size <= Teleport.MAX_BLOB_BYTES - 16) return Clip.Bytes(bytes, type)
-                if (bytes != null) { toast("Too large (max 10 MB)"); return null }
+                if (bytes != null) { toast("Too large (max 250 MB)"); return null }
             }
         }
         val text = item.coerceToText(this)?.toString()

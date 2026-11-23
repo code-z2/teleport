@@ -360,3 +360,56 @@ export function checkPath(path: string, showHidden: boolean): string | null {
   if (!showHidden && parts.some((p, i) => p.startsWith(".") || (i === 0 && p === "Library"))) return null;
   return parts.join("/");
 }
+
+// ---------- chunked blobs (SPEC.md "Large blobs") ----------
+
+/** Plaintext bytes per chunk for large blobs. */
+export const BLOB_CHUNK = 4 * 1024 * 1024;
+
+/** Nonce for chunk i: n[0..4] ‖ (n[4..12] XOR u64be(i)). Unique per chunk under one key. */
+export function chunkNonce(n: Uint8Array, i: number): Uint8Array {
+  const out = n.slice();
+  const v = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  v.setBigUint64(4, v.getBigUint64(4) ^ BigInt(i));
+  return out;
+}
+
+/** AAD for chunk i: "teleport/v1/blob" ‖ u64be(i) ‖ last (1 byte). Binds order and the end. */
+export function chunkAad(i: number, last: boolean): Uint8Array {
+  const tail = new Uint8Array(9);
+  new DataView(tail.buffer).setBigUint64(0, BigInt(i));
+  tail[8] = last ? 1 : 0;
+  return concat(BLOB_AAD, tail);
+}
+
+/** Number of chunks: at least one (an empty file is one empty, final chunk). */
+export const chunkCount = (size: number, chunk: number) => Math.max(1, Math.ceil(size / chunk));
+
+export async function sealBlobChunked(bytes: Uint8Array, key: Uint8Array, n: Uint8Array, chunk = BLOB_CHUNK): Promise<Uint8Array> {
+  const count = chunkCount(bytes.length, chunk);
+  const parts: Uint8Array[] = [];
+  for (let i = 0; i < count; i++) {
+    const piece = bytes.subarray(i * chunk, Math.min((i + 1) * chunk, bytes.length));
+    parts.push(await aesGcm("encrypt", key, chunkNonce(n, i), piece, chunkAad(i, i === count - 1)));
+  }
+  return concat(...parts);
+}
+
+/** Throws unless every chunk authenticates, in order, ending with the final chunk at `size`. */
+export async function openBlobChunked(ct: Uint8Array, key: Uint8Array, n: Uint8Array, size: number, chunk: number): Promise<Uint8Array> {
+  const count = chunkCount(size, chunk);
+  if (ct.length !== size + 16 * count) throw new OpenError("decrypt");
+  const parts: Uint8Array[] = [];
+  let offset = 0;
+  for (let i = 0; i < count; i++) {
+    const plain = i === count - 1 ? size - i * chunk : chunk;
+    const piece = ct.subarray(offset, offset + plain + 16);
+    offset += plain + 16;
+    try {
+      parts.push(await aesGcm("decrypt", key, chunkNonce(n, i), piece, chunkAad(i, i === count - 1)));
+    } catch {
+      throw new OpenError("decrypt");
+    }
+  }
+  return concat(...parts);
+}

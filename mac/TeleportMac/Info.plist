@@ -31,6 +31,8 @@
 				<string>public.url</string>
 				<string>public.png</string>
 				<string>public.tiff</string>
+				<!-- Files selected in Finder: Services ▸ Teleport sends them (up to 250 MB). -->
+				<string>public.file-url</string>
 			</array>
 			<!-- An (empty) required context makes the service enabled by default. -->
 			<key>NSRequiredContext</key>

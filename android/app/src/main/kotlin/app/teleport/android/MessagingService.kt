@@ -36,6 +36,8 @@ class MessagingService : FirebaseMessagingService() {
         when (received) {
             is Received.ClipReceived -> ClipDelivery.deliver(this, received.clip, received.id, received.from.name)
             is Received.BlobPending -> {
+                // Large files: download in the foreground service (minutes, not FCM's seconds).
+                if (received.pointer.isChunked) return TransferService.download(this, received.pointer, received.from.name)
                 // Images and long text are downloaded from the relay. Background network can
                 // be blocked (background data off on mobile data, Data Saver): retry once,
                 // then hand off to the app, which downloads when opened.

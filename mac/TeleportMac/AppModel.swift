@@ -114,6 +114,8 @@ final class AppModel {
                         activity = "Image from \(from.name) copied" + (saved != nil ? " and saved to Downloads" : "")
                         Notifier.post(title: "Image from \(from.name)", body: saved != nil ? "Copied, and saved to Downloads/Teleport" : "Copied", file: saved)
                     }
+                case .file(let pointer, _, let from):
+                    await receiveFile(pointer, from: from)
                 case .pairRequest(let request):
                     reload()
                     Notifier.postPairRequest(request)
@@ -188,23 +190,45 @@ final class AppModel {
         activity = "Renamed to \(trimmed)"
     }
 
+    /// Large files go straight to ~/Downloads/Teleport (streamed: never all in memory).
+    private func receiveFile(_ p: BlobPointer, from: Peer) async {
+        guard let teleport, let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first else { return }
+        let dir = downloads.appending(path: "Teleport", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let name = (p.name ?? "File from \(from.name)").replacingOccurrences(of: "/", with: "-")
+        let dest = dir.appending(path: FileServer.uniqueName(name, in: dir))
+        activity = "Receiving \(name) from \(from.name)…"
+        do {
+            try await teleport.downloadFile(p, to: dest) { done, total in
+                Task { @MainActor in self.activity = "Receiving \(name) from \(from.name)… \(total > 0 ? Int(100 * done / total) : 0)%" }
+            }
+            activity = "Saved \(dest.lastPathComponent) from \(from.name) to Downloads"
+            Notifier.post(title: "File from \(from.name)", body: "\(dest.lastPathComponent) saved to Downloads/Teleport", file: dest)
+        } catch {
+            activity = "Couldn't receive \(name): \(error.localizedDescription)"
+            Notifier.post(title: "Couldn't receive a file", body: "\(name) from \(from.name): \(error.localizedDescription)")
+        }
+    }
+
     // MARK: Sending
 
     func sendClipboard(to peer: Peer) {
         guard let teleport else { return }
-        guard let clip = Pasteboard.read() else {
+        guard let outgoing = Pasteboard.read() else {
             activity = "The clipboard is empty"
             return
         }
         activity = "Sending to \(peer.name)…"
         Task {
             do {
-                try await teleport.send(clip, to: peer)
-                if case .image = clip { activity = "Image sent to \(peer.name)" } else { activity = "Sent to \(peer.name)" }
+                try await teleport.send(outgoing, to: peer) { sent, total in
+                    Task { @MainActor in self.activity = "Sending to \(peer.name)… \(total > 0 ? Int(100 * sent / total) : 0)%" }
+                }
+                activity = "Sent to \(peer.name)"
             } catch RelayError.peerGone {
                 activity = "\(peer.name)'s push address expired. Open Teleport there, or re-pair."
             } catch TeleportError.tooLarge {
-                activity = "Too large (max 10 MB)"
+                activity = "Too large (max 250 MB)"
             } catch {
                 activity = "Couldn't send: \(error)"
             }
@@ -213,7 +237,7 @@ final class AppModel {
 
     /// "Teleport" from the right-click menu (macOS Services): with one device, send at once;
     /// otherwise pop up the devices by name at the pointer.
-    func teleportSelection(_ clip: Clip?) {
+    func teleportSelection(_ clip: Outgoing?) {
         guard let clip else {
             return Notifier.post(title: "Teleport", body: "There's nothing in that selection Teleport can send.")
         }
@@ -224,17 +248,21 @@ final class AppModel {
         }
     }
 
-    private func send(_ clip: Clip, to peer: Peer) {
+    private func send(_ clip: Outgoing, to peer: Peer) {
         guard let teleport else { return }
         Task {
             do {
-                try await teleport.send(clip, to: peer)
+                try await teleport.send(clip, to: peer) { sent, total in
+                    Task { @MainActor in self.activity = "Sending to \(peer.name)… \(total > 0 ? Int(100 * sent / total) : 0)%" }
+                }
                 activity = "Sent to \(peer.name)"
                 Notifier.post(title: "Sent to \(peer.name)", body: "")
             } catch RelayError.peerGone {
                 Notifier.post(title: "Teleport", body: "\(peer.name) needs to open Teleport (or re-pair).")
             } catch RelayError.offline {
                 Notifier.post(title: "Teleport", body: "\(peer.name) is offline.")
+            } catch TeleportError.tooLarge {
+                Notifier.post(title: "Teleport", body: "That's too large to teleport (250 MB max).")
             } catch {
                 Notifier.post(title: "Teleport", body: "Couldn't send to \(peer.name): \(error.localizedDescription)")
             }

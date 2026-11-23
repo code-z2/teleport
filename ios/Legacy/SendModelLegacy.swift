@@ -10,12 +10,13 @@ import TeleportCore
 @MainActor
 final class SendModelLegacy: ObservableObject, SendModeling {
     @Published var phase: SendPhase = .loading
+    @Published var progress: Double?
     @Published var peers: [Peer] = []
     @Published var online: [String: Bool] = [:]
     @Published var unreachable: Set<String> = []
 
     let teleport: Teleport?
-    let loadClip: () async throws -> Clip?
+    let loadClip: () async throws -> Outgoing?
     let onSent: (Peer) -> Void
     let finish: () -> Void
     let only: Platform?
@@ -23,7 +24,7 @@ final class SendModelLegacy: ObservableObject, SendModeling {
     init(
         preselected: String? = nil,
         only: Platform? = nil,
-        loadClip: @escaping () async throws -> Clip?,
+        loadClip: @escaping () async throws -> Outgoing?,
         onSent: @escaping (Peer) -> Void = { _ in },
         finish: @escaping () -> Void
     ) {
@@ -42,7 +43,7 @@ struct LegacySendPicker: View {
 
     var body: some View {
         SendPickerContent(
-            phase: model.phase, peers: model.peers, online: model.online, unreachable: model.unreachable,
+            phase: model.phase, progress: model.progress, peers: model.peers, online: model.online, unreachable: model.unreachable,
             send: model.send(to:), cancel: model.cancel)
     }
 }
@@ -53,7 +54,7 @@ enum SendPickerFactory {
     static func make(
         preselected: String? = nil,
         only: Platform? = nil,
-        loadClip: @escaping () async throws -> Clip?,
+        loadClip: @escaping () async throws -> Outgoing?,
         onSent: @escaping (Peer) -> Void = { _ in },
         finish: @escaping () -> Void
     ) -> AnyView {

@@ -108,6 +108,8 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .teleportPushStateChanged)) { _ in reload() }
             // From the Control Center button (or Siri / Shortcuts): send what's on the clipboard.
             .clipboardSendSheet()
+            .modifier(IncomingFileSheet())  // large files opened from their notification
+            .modifier(CopiedBanner())       // "Copied from …" after tapping a text notification
             .sheet(isPresented: $showingQR) {
                 if let teleport { PairingCodeSheet(teleport: teleport, name: name) }
             }

@@ -16,7 +16,7 @@ struct ClipboardSendSheet: View {
         .onAppear {
             guard picker == nil else { return }
             picker = SendPickerFactory.make(
-                loadClip: { await Self.readClipboard() },
+                loadClip: { await Self.readClipboard().map(Outgoing.clip) },
                 onSent: { ShareSuggestion.donate(for: $0) },
                 finish: dismiss)
         }

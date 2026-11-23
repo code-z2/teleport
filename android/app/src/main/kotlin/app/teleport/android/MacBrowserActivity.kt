@@ -113,7 +113,8 @@ class MacBrowserActivity : ComponentActivity() {
         val peer = intent.getStringExtra(EXTRA_PEER)?.let { teleport.store.peers[it] }
         if (peer == null || !peer.hasMailbox) { finish(); return }
         mac = peer
-        previewCache.deleteRecursively()  // previews are temporary
+        // Previews are kept a day so an interrupted or reopened one resumes; older ones go.
+        previewCache.listFiles()?.filter { System.currentTimeMillis() - it.lastModified() > 86_400_000 }?.forEach { it.deleteRecursively() }
         setContent { TeleportTheme { Screen() } }
         load("")
     }
@@ -188,6 +189,7 @@ class MacBrowserActivity : ComponentActivity() {
         }
         when {
             state.kind == PreviewKind.NONE -> state.phase = "unsupported"
+            state.kind == PreviewKind.MEDIA -> state.phase = "stream"  // plays at once; Save fetches it all
             entry.size > PreviewState.AUTO_PREVIEW_LIMIT -> state.phase = "thumb"
             else -> fetch(state)
         }
@@ -203,25 +205,42 @@ class MacBrowserActivity : ComponentActivity() {
         state.file?.let { return then(it) }
         if (state.job?.isActive == true) return
         val before = state.phase
-        state.phase = "loading"; state.progress = 0f
+        val streaming = before == "stream"
+        // Same place every time for this file: an interrupted or reopened preview resumes.
+        val key = java.security.MessageDigest.getInstance("SHA-256")
+            .digest("${mac.id}|${state.path}|${state.entry.size}|${state.entry.mtime}".toByteArray()).take(12).joinToString("") { "%02x".format(it) }
+        val dest = java.io.File(java.io.File(previewCache, key).also { it.mkdirs() }, state.entry.name)
+        if (dest.exists()) { state.file = dest; if (!streaming) state.phase = if (state.kind == PreviewKind.NONE) "unsupported" else "ready"; return then(dest) }
+        if (streaming) state.saving = 0f else { state.phase = "loading"; state.progress = 0f }
         state.job = lifecycleScope.launch {
-            val dest = java.io.File(previewCache, java.util.UUID.randomUUID().toString()).also { it.mkdirs() }.let { java.io.File(it, state.entry.name) }
             val scope = coroutineContext
             try {
-                withSession { s ->
-                    dest.outputStream().use { out ->
-                        s.download(state.path, out, cancelled = { !scope.isActive }) { d, total ->
-                            val t = if (total > 0) total else state.entry.size
-                            if (t > 0) state.progress = d.toFloat() / t
+                var tries = 0
+                while (true) {
+                    try {
+                        withSession { s ->
+                            s.downloadToFile(state.path, dest, cancelled = { !scope.isActive }) { d, total ->
+                                val t = if (total > 0) total else state.entry.size
+                                val f = if (t > 0) d.toFloat() / t else 0f
+                                if (streaming) state.saving = f else state.progress = f
+                            }
                         }
+                        break
+                    } catch (e: app.teleport.core.SessionException) {
+                        // The computer dropped off for a moment: wait, reconnect, carry on from the saved bytes.
+                        if (e.code !in setOf("closed", "offline", "protocol") || ++tries > 60) throw e
+                        client = null
+                        kotlinx.coroutines.delay(minOf(tries, 5) * 1000L)
                     }
                 }
                 state.file = dest
-                state.phase = if (state.kind == PreviewKind.NONE) "unsupported" else "ready"
+                state.saving = null
+                if (!streaming) state.phase = if (state.kind == PreviewKind.NONE) "unsupported" else "ready"
                 then(dest)
             } catch (e: Exception) {
-                dest.delete()
-                if (e is CancellationException) { state.phase = before } else { state.phase = "failed"; state.error = e.message }
+                state.saving = null
+                if (e is CancellationException) { state.phase = before } else if (!streaming) { state.phase = "failed"; state.error = e.message }
+                else message = "Couldn't save ${state.entry.name}: ${e.message}" to System.nanoTime()
             }
         }
     }
@@ -385,7 +404,12 @@ class MacBrowserActivity : ComponentActivity() {
             },
             snackbarHost = { SnackbarHost(snackbar) },
         ) { padding ->
-            PreviewBody(state, onLoad = { fetch(state) }, contentPadding = padding)
+            PreviewBody(state, onLoad = { fetch(state) }, contentPadding = padding,
+                // Called on the player's own threads (never the main thread); `cancelled` lets a
+                // closing player abandon a read at once instead of waiting for the network.
+                stream = { offset, length, cancelled ->
+                    kotlinx.coroutines.runBlocking { withSession { it.read(state.path, offset, length, cancelled) } }
+                })
         }
     }
 

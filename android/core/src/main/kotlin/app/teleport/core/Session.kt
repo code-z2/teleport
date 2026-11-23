@@ -25,6 +25,8 @@ object SessionCrypto {
     const val CHUNK = 256 * 1024
     const val WINDOW = 2L * 1024 * 1024
     const val ACK_EVERY = 1024L * 1024
+    /** Largest `read` (a byte range, for streaming): within one window, so no acks needed. */
+    const val MAX_READ = 2 * 1024 * 1024
 
     fun helloTranscript(mailbox: String, from: String, epk: String, n: String, ts: Long): ByteArray =
         "teleport/v1/session|$mailbox|$from|$epk|$n|$ts".toByteArray()
@@ -289,6 +291,74 @@ class FileSessionClient private constructor(private val pipe: SessionPipe, priva
                         }
                         return bytes
                     }
+                }
+            }
+        } finally {
+            end(id, cancel = false)
+        }
+    }
+
+    /**
+     * Downloads [path] into [dest], resuming an earlier attempt that was cut off: the bytes
+     * already in the partial file are hashed again and the computer sends only the rest. A
+     * dropped connection keeps the partial file; a hash mismatch (the file changed) drops it.
+     */
+    fun downloadToFile(path: String, dest: java.io.File, cancelled: () -> Boolean = { false },
+                       progress: (done: Long, total: Long) -> Unit = { _, _ -> }) {
+        val partial = java.io.File(dest.parentFile, ".${dest.name}.teleport-part")
+        val sha = MessageDigest.getInstance("SHA-256")
+        if (partial.exists()) partial.inputStream().use { input ->
+            val buf = ByteArray(1 shl 20)
+            while (true) { val n = input.read(buf); if (n < 0) break; sha.update(buf, 0, n) }
+        }
+        val offset = partial.length()
+        val (id, q) = begin { Control("download", it, path = path, offset = offset) }
+        var ok = false
+        try {
+            java.io.FileOutputStream(partial, true).use { out ->
+                var total = 0L; var got = offset; var acked = offset
+                while (true) {
+                    when (val f = next(q, cancelled)) {
+                        is SessionFrame.Data -> {
+                            out.write(f.bytes); sha.update(f.bytes); got += f.bytes.size
+                            if (got - acked >= SessionCrypto.ACK_EVERY) { send(SessionFrame.Ctl(Control("ack", id, bytes = got))); acked = got }
+                            progress(got, total)
+                        }
+                        is SessionFrame.Ctl -> when (f.c.op) {
+                            "meta" -> {
+                                total = f.c.size ?: 0
+                                if (offset > total) { partial.delete(); throw SessionException("closed", "The file changed; starting again.") }
+                                progress(got, total)
+                            }
+                            "done" -> {
+                                out.close()
+                                if (sha.digest().b64u() != f.c.sha256) { partial.delete(); throw SessionException("hash", "The file was corrupted in transit. Try again.") }
+                                dest.delete()
+                                if (!partial.renameTo(dest)) throw SessionException("io", "Couldn't save the file.")
+                                ok = true
+                                return
+                            }
+                        }
+                    }
+                }
+            }
+        } finally {
+            end(id, cancel = !ok)
+        }
+    }
+
+    /**
+     * Up to 2 MiB of [path] from [offset] (streaming: a player reads what it needs next).
+     * [cancelled] is checked while waiting, so closing the player never blocks on the network.
+     */
+    fun read(path: String, offset: Long, length: Int, cancelled: () -> Boolean = { false }): ByteArray {
+        val (id, q) = begin { Control("read", it, path = path, offset = offset, size = minOf(length, SessionCrypto.MAX_READ).toLong()) }
+        try {
+            val out = java.io.ByteArrayOutputStream()
+            while (true) {
+                when (val f = next(q, cancelled)) {
+                    is SessionFrame.Data -> out.write(f.bytes)
+                    is SessionFrame.Ctl -> if (f.c.op == "done") return out.toByteArray()
                 }
             }
         } finally {

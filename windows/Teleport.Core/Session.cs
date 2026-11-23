@@ -16,6 +16,8 @@ public static class SessionCrypto
     public const int ChunkSize = 256 * 1024;
     public const long Window = 2L * 1024 * 1024;
     public const long AckEvery = 1024L * 1024;
+    /// Largest `read` (a byte range, for streaming): within one window, so no acks needed.
+    public const int MaxRead = 2 * 1024 * 1024;
 
     public sealed record Hello(string T, int V, string From, string Epk, string N, long Ts, string Sig);
     public sealed record Accept(string Epk, string N, string Sig, string T = "accept");

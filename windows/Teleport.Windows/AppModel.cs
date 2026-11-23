@@ -43,7 +43,7 @@ public sealed class AppModel : IAsyncDisposable
             store.DeviceName ??= Name;
 
             Connection = new MailboxConnection(Teleport, () => new FileServer.Options(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), store.ShowHiddenFiles))
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), store.ShowHiddenFiles, Drives: SharedDrives(), Folders: RelocatedFolders()))
             {
                 Thumbnailer = Thumbnails.JpegAsync,
                 Log = Log.Write,
@@ -85,6 +85,52 @@ public sealed class AppModel : IAsyncDisposable
             Log.Write(LoadError + "\n" + e);
         }
         Reload();
+    }
+
+    /// Desktop, Documents, Pictures, Videos and Music where Windows really keeps them. With
+    /// OneDrive backup on they live in OneDrive\\…, and the same-named folders in the home
+    /// folder are stale and nearly empty: phones should see the real ones, like Explorer does.
+    private static Dictionary<string, string> RelocatedFolders()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var folders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, folder) in new[]
+                 {
+                     ("Desktop", Environment.SpecialFolder.DesktopDirectory), ("Documents", Environment.SpecialFolder.MyDocuments),
+                     ("Pictures", Environment.SpecialFolder.MyPictures), ("Videos", Environment.SpecialFolder.MyVideos),
+                     ("Music", Environment.SpecialFolder.MyMusic),
+                 })
+        {
+            var actual = Environment.GetFolderPath(folder);
+            if (string.IsNullOrEmpty(actual) || !Directory.Exists(actual)) continue;
+            var usual = Path.Combine(home, name);
+            if (!Path.GetFullPath(actual).TrimEnd('\\').Equals(Path.GetFullPath(usual).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+                folders[name] = actual;
+        }
+        return folders;
+    }
+
+    /// Every drive except the one Windows runs from (its user files are shared through home):
+    /// internal second drives, USB disks and sticks, SD cards. Named "Label (D)", read fresh
+    /// for each session so drives plugged in later appear.
+    private static Dictionary<string, string> SharedDrives()
+    {
+        var system = Path.GetPathRoot(Environment.SystemDirectory) ?? "C:\\";
+        var drives = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var d in DriveInfo.GetDrives())
+        {
+            try
+            {
+                if (!d.IsReady || d.DriveType is not (DriveType.Fixed or DriveType.Removable)) continue;
+                if (d.RootDirectory.FullName.Equals(system, StringComparison.OrdinalIgnoreCase)) continue;
+                var letter = d.Name.TrimEnd('\\', ':');
+                var label = string.IsNullOrWhiteSpace(d.VolumeLabel) ? (d.DriveType == DriveType.Removable ? "USB Drive" : "Local Disk") : d.VolumeLabel;
+                var name = string.Concat($"{label} ({letter})".Split(Path.GetInvalidFileNameChars())).TrimEnd('.', ' ');
+                drives[name] = d.RootDirectory.FullName;
+            }
+            catch (IOException) { }
+        }
+        return drives;
     }
 
     /// "Peso's PC" style names read better than DESKTOP-AB12CD; the user can rename.
@@ -221,6 +267,9 @@ public sealed class AppModel : IAsyncDisposable
                 Notify?.Invoke($"File from {from.Name}", "Saved to Downloads\\Teleport.",
                     file is null ? null : () => System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{file}\""));
                 break;
+            case Received.FileReceived { Pointer: var p, From: var from }:
+                await ReceiveFileAsync(p, from);
+                break;
             case Received.PairRequested { Request: var r }:
                 Log.Write($"pairing request from {r.Name} ({r.Platform})");
                 Notify?.Invoke("Pairing request", $"{r.Name} wants to pair. Open Teleport to allow it.", () => OpenPanel?.Invoke());
@@ -314,12 +363,68 @@ public sealed class AppModel : IAsyncDisposable
     }
 
     /// A file for Send To: images go as images, text files as text, anything else as a file.
+    /// Small text files and small images go as clips; null means "send it as a file".
     public static Clip? ClipFromFile(string path)
     {
         if (!File.Exists(path)) return null;
         var mime = Mime.ForName(path);
-        if (mime.StartsWith("text/") && new FileInfo(path).Length < 1_000_000) return new Clip.Text(File.ReadAllText(path));
-        return new Clip.Bytes(File.ReadAllBytes(path), mime);
+        var size = new FileInfo(path).Length;
+        if (mime.StartsWith("text/") && size < 1_000_000) return new Clip.Text(File.ReadAllText(path));
+        if (mime.StartsWith("image/") && size + 16 <= TeleportClient.MaxBlobBytes) return new Clip.Bytes(File.ReadAllBytes(path), mime);
+        return null;
+    }
+
+    /// Any file up to 250 MB, streamed from disk with progress in the panel.
+    public async Task SendFileAsync(string path, Peer to)
+    {
+        if (Teleport is not { } t) return;
+        var name = Path.GetFileName(path);
+        Say($"Sending {name} to {to.Name}…");
+        try
+        {
+            await using var input = File.OpenRead(path);
+            var last = DateTime.MinValue;
+            await t.SendFileAsync(input, input.Length, Mime.ForName(path), name, to, (sent, total) =>
+            {
+                if ((DateTime.UtcNow - last).TotalMilliseconds < 300 && sent < total) return;
+                last = DateTime.UtcNow;
+                _ui.InvokeAsync(() => { Activity = $"Sending {name} to {to.Name}… {(total > 0 ? 100 * sent / total : 0)}%"; Raise(); });
+            });
+            Say($"Sent {name} to {to.Name}.");
+            Notify?.Invoke("Teleport", $"Sent {name} to {to.Name}.", null);
+        }
+        catch (TooLargeException e) { Say(e.Message); Notify?.Invoke("Too large to teleport", $"{name} is over 250 MB.", null); }
+        catch (OfflineException) { Say($"{to.Name} is offline."); Notify?.Invoke("Couldn't send", $"{to.Name} is offline.", null); }
+        catch (Exception e) { Say($"Couldn't send {name}: {e.Message}"); Notify?.Invoke("Couldn't send", e.Message, null); }
+    }
+
+    /// Large files go straight to Downloads\Teleport, streamed (never all in memory).
+    private async Task ReceiveFileAsync(BlobPointer p, Peer from)
+    {
+        if (Teleport is not { } t) return;
+        var downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Teleport");
+        Directory.CreateDirectory(downloads);
+        var name = string.Concat((p.Name ?? $"File from {from.Name}").Split(Path.GetInvalidFileNameChars()));
+        var dest = Path.Combine(downloads, FileServer.UniqueName(name, downloads));
+        Say($"Receiving {name} from {from.Name}…");
+        try
+        {
+            var last = DateTime.MinValue;
+            await t.DownloadFileAsync(p, dest, (done, total) =>
+            {
+                if ((DateTime.UtcNow - last).TotalMilliseconds < 300 && done < total) return;
+                last = DateTime.UtcNow;
+                _ui.InvokeAsync(() => { Activity = $"Receiving {name} from {from.Name}… {(total > 0 ? 100 * done / total : 0)}%"; Raise(); });
+            });
+            Say($"Saved {Path.GetFileName(dest)} from {from.Name} to Downloads\\Teleport.");
+            Notify?.Invoke($"File from {from.Name}", $"{Path.GetFileName(dest)} saved to Downloads\\Teleport.",
+                () => System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{dest}\""));
+        }
+        catch (Exception e)
+        {
+            Say($"Couldn't receive {name}: {e.Message}");
+            Notify?.Invoke("Couldn't receive a file", $"{name} from {from.Name}: {e.Message}", null);
+        }
     }
 
     public async Task SendAsync(Clip clip, Peer to)

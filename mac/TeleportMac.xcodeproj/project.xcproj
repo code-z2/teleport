@@ -33,7 +33,7 @@
         { "path": "AppModel.swift", "target-membership": [ "Teleport/compile-sources" ] },
         { "path": "MailboxConnection.swift", "target-membership": [ "Teleport/compile-sources" ] },
         { "path": "MenuPanel.swift", "target-membership": [ "Teleport/compile-sources" ] },
-        { "path": "Pasteboard.swift", "target-membership": [ "Teleport/compile-sources" ] },
+        { "path": "Pasteboard.swift", "target-membership": [ "Teleport/compile-sources", "TeleportShare/compile-sources" ] },
         { "path": "SystemServices.swift", "target-membership": [ "Teleport/compile-sources" ] },
         { "path": "TeleportMacApp.swift", "target-membership": [ "Teleport/compile-sources" ] },
         { "path": "Info.plist" },

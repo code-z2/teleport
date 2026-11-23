@@ -25,10 +25,20 @@ open class ShareActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Videos, documents, big images: sent as files (up to 250 MB) by TransferService.
+        val stream = if (intent.action == Intent.ACTION_SEND) IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java) else null
+        if (stream != null) {
+            val mime = contentResolver.getType(stream) ?: intent.type ?: "application/octet-stream"
+            val size = sizeOf(stream)
+            if (isLargeOrFile(mime, size)) {
+                if (tooLargeToSend(size)) { toast("Too large (max 250 MB)"); finish(); return }
+                return deliverFile(stream, mime, intent.getStringExtra(Intent.EXTRA_SHORTCUT_ID))
+            }
+        }
         val clip = try {
             extract(intent)
         } catch (e: TooLargeException) {
-            null.also { toast("Too large (max 10 MB)") }
+            null.also { toast("Too large (max 250 MB)") }
         }
         if (clip == null) {
             finish(); return
@@ -38,40 +48,40 @@ open class ShareActivity : Activity() {
     }
 
     /** Sends to [chosenId] if given, the only device if there's one, otherwise asks which. */
-    protected fun deliver(clip: Clip, chosenId: String? = null) {
+    protected fun deliver(clip: Clip, chosenId: String? = null) = choose(chosenId) { send(clip, it) }
+
+    /** A file: TransferService uploads it in the background with a progress notification. */
+    protected fun deliverFile(uri: Uri, mime: String, chosenId: String? = null) = choose(chosenId) { peer ->
+        TransferService.upload(this, uri, peer.id, mime)
+        toast("Teleporting to ${peer.name}…")
+        finish()
+    }
+
+    protected fun sizeOf(uri: Uri): Long =
+        contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null
+        } ?: runCatching { contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } }.getOrNull() ?: 0L
+
+    private fun choose(chosenId: String?, go: (Peer) -> Unit) {
         val teleport = TeleportApp.of(this).teleport
         val peers = teleport.sortedPeers()
         val chosen = chosenId?.let { teleport.store.peers[it] }
         when {
-            chosen != null -> send(clip, chosen)
+            chosen != null -> go(chosen)
             peers.isEmpty() -> { toast("Open Teleport to pair first"); finish() }
-            peers.size == 1 -> send(clip, peers[0])
+            peers.size == 1 -> go(peers[0])
             else -> AlertDialog.Builder(this, android.R.style.Theme_Material_Light_Dialog_Alert)
                 .setTitle("Teleport to…")
-                .setItems(peers.map { it.name }.toTypedArray()) { _, i -> send(clip, peers[i]) }
+                .setItems(peers.map { it.name }.toTypedArray()) { _, i -> go(peers[i]) }
                 .setOnCancelListener { finish() }
                 .show()
         }
     }
 
+    /** Hands the clip to TransferService, which Android won't freeze mid-upload. */
     private fun send(clip: Clip, peer: Peer) {
-        val app = TeleportApp.of(this)
+        TransferService.sendClip(this, clip, peer.id)
         toast("Teleporting to ${peer.name}…")
-        // Application-scoped so finishing the activity doesn't cancel the upload.
-        appScope.launch {
-            val message = try {
-                app.teleport.send(clip, peer)
-                PeerShortcut.publish(app, peer)
-                "Sent to ${peer.name} ✓"
-            } catch (e: app.teleport.core.OfflineException) {
-                "${peer.name} is offline"
-            } catch (e: PeerGoneException) {
-                "${peer.name}'s push address expired — open Teleport there or re-pair"
-            } catch (e: Exception) {
-                "Send failed: ${e.message}"
-            }
-            withContext(Dispatchers.Main) { Toast.makeText(app, message, Toast.LENGTH_SHORT).show() }
-        }
         finish()
     }
 

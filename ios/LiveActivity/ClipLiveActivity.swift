@@ -1,6 +1,7 @@
 import ActivityKit
 import AppIntents
 import SwiftUI
+import TeleportCore
 import WidgetKit
 
 @main
@@ -26,64 +27,117 @@ struct TeleportClipboardControl: ControlWidget {
     }
 }
 
-/// Started remotely by push-to-start. Shows no plaintext (content-state is ciphertext);
-/// Copy (and Save, for images) run intents in the app process, which decrypt first.
+/// A photo or file on its way (the relay starts these; text arrives as a notification).
+/// The notification extension starts the download; the app updates this with progress,
+/// then Ready. Icon buttons: Copy, Save, Cancel.
 @available(iOS 17.2, *)
 struct ClipLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: ClipActivityAttributes.self) { context in
-            HStack {
-                Label(title(context.attributes.kind), systemImage: icon(context.attributes.kind))
-                    .font(.headline)
-                Spacer()
-                ClipButtons(env: context.state.env, kind: context.attributes.kind)
-            }
-            .padding()
-            .activityBackgroundTint(Color.black.opacity(0.6))
-            .activitySystemActionForegroundColor(.white)
+            InboxActivityView(kind: context.attributes.kind, from: SenderName.of(context.attributes.from), state: context.state)
+                .padding()
+                .activityBackgroundTint(Color.black.opacity(0.6))
+                .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
-            DynamicIsland {
+            let title = InboxTitle.of(kind: context.attributes.kind, state: context.state)
+            return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Image(systemName: icon(context.attributes.kind)).font(.title2)
+                    Image(systemName: context.attributes.kind == "image" ? "photo" : "doc").font(.title2)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    Text(title(context.attributes.kind)).font(.headline)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title).font(.headline).lineLimit(1)
+                        Text("from \(SenderName.of(context.attributes.from))").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    ClipButtons(env: context.state.env, kind: context.attributes.kind).frame(maxWidth: .infinity)
+                    InboxActivityControls(state: context.state)
                 }
             } compactLeading: {
-                Image(systemName: icon(context.attributes.kind))
+                Image(systemName: context.attributes.kind == "image" ? "photo" : "doc")
             } compactTrailing: {
-                Button(intent: CopyClipIntent(env: context.state.env)) { Text("Copy") }
-                    .buttonStyle(.plain).foregroundStyle(.tint)
+                if let p = context.state.progress, context.state.ready != true {
+                    ProgressView(value: p).progressViewStyle(.circular).frame(width: 18)
+                } else if context.state.ready == true || context.state.note != nil {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                } else {
+                    ProgressView().frame(width: 18)
+                }
             } minimal: {
-                Image(systemName: "arrow.right.doc.on.clipboard")
+                Image(systemName: context.attributes.kind == "image" ? "photo" : "doc")
             }
         }
     }
-
-    private func title(_ kind: String) -> String { kind == "blob" ? "New image or file" : "New clip" }
-    private func icon(_ kind: String) -> String { kind == "blob" ? "photo" : "arrow.right.doc.on.clipboard" }
 }
 
-/// Copy, plus Save for images (blobs). Both run in the app's process.
+/// "IMG_2041.jpg" once the app has named it; until then "Photo" / "File".
+enum InboxTitle {
+    static func of(kind: String, state: ClipActivityAttributes.ContentState) -> String {
+        if let name = state.name { return name }
+        if let name = Inbox(appGroup: TeleportConfig.fromBundle().appGroup).item(env: state.env)?.name { return name }
+        return kind == "image" ? "Photo" : "File"
+    }
+}
+
 @available(iOS 17.2, *)
-private struct ClipButtons: View {
-    let env: String
+private struct InboxActivityView: View {
     let kind: String
+    let from: String
+    let state: ClipActivityAttributes.ContentState
     var body: some View {
-        HStack(spacing: 8) {
-            Button(intent: CopyClipIntent(env: env)) {
-                Label("Copy", systemImage: "doc.on.doc").frame(minWidth: 72)
-            }
-            .buttonStyle(.borderedProminent)
-            if kind == "blob" {
-                Button(intent: SaveClipIntent(env: env)) {
-                    Label("Save", systemImage: "square.and.arrow.down").frame(minWidth: 72)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: kind == "image" ? "photo" : "doc").font(.title2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(InboxTitle.of(kind: kind, state: state)).font(.headline).lineLimit(1)
+                    Text("from \(from)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
-                .buttonStyle(.bordered)
+            }
+            InboxActivityControls(state: state)
+        }
+    }
+}
+
+/// The status line (progress, Ready or an outcome) and the Copy / Save / Cancel icons.
+@available(iOS 17.2, *)
+private struct InboxActivityControls: View {
+    let state: ClipActivityAttributes.ContentState
+    var body: some View {
+        HStack(spacing: 12) {
+            Group {
+                if let note = state.note {
+                    Label(note, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                } else if state.ready == true {
+                    Text("Ready").foregroundStyle(.secondary)
+                } else if let p = state.progress {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ProgressView(value: p)
+                        Text("\(Int(p * 100))%").font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                    }
+                } else {
+                    HStack(spacing: 6) { ProgressView(); Text("Downloading…").foregroundStyle(.secondary) }
+                }
+            }
+            .font(.subheadline)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if state.note == nil {
+                Button(intent: CopyInboxIntent(env: state.env)) { Image(systemName: "doc.on.doc") }
+                    .buttonStyle(.bordered).buttonBorderShape(.circle).accessibilityLabel("Copy")
+                Button(intent: SaveInboxIntent(env: state.env)) { Image(systemName: "square.and.arrow.down") }
+                    .buttonStyle(.bordered).buttonBorderShape(.circle).accessibilityLabel("Save")
+                Button(intent: CancelInboxIntent(env: state.env)) { Image(systemName: "xmark") }
+                    .buttonStyle(.bordered).buttonBorderShape(.circle).accessibilityLabel(state.ready == true ? "Dismiss" : "Cancel")
             }
         }
+    }
+}
+
+/// The paired device's name for a fingerprint, from the store the app shares with this widget.
+enum SenderName {
+    static func of(_ fingerprint: String?) -> String {
+        guard let fingerprint else { return "a paired device" }
+        let store = SharedStore(appGroup: TeleportConfig.fromBundle().appGroup)
+        return store.peers[fingerprint]?.name ?? "a paired device"
     }
 }

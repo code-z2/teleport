@@ -25,7 +25,7 @@ final class MacConnectionLegacy: ObservableObject {
     init(teleport: Teleport, mac: Peer) {
         self.teleport = teleport
         self.mac = mac
-        try? FileManager.default.removeItem(at: PreviewCache.url)
+        PreviewCache.prune()
     }
 
     private func session() async throws -> FileSessionClient {
@@ -359,6 +359,7 @@ struct LegacyFilePreviewView: View {
         case ready(URL)               // full preview on screen
         case unsupported              // no viewer for this type
         case failed(String)
+        case streaming                // a video or song playing while it's still on the computer
     }
 
     @State private var phase: Phase = .loading(0)
@@ -368,6 +369,8 @@ struct LegacyFilePreviewView: View {
     @State private var exporting: URL?
     @State private var sharing: URL?
     @State private var notice: String?
+    /// Saving a file that's streaming: download progress, shown over the player.
+    @State private var saving: Double?
 
     private var type: UTType? { UTType(filenameExtension: (entry.name as NSString).pathExtension) }
     private var previewable: Bool { Self.previewable(type) }
@@ -396,6 +399,22 @@ struct LegacyFilePreviewView: View {
     @ViewBuilder
     private var content: some View {
         switch phase {
+        case .streaming:
+            ZStack(alignment: .bottom) {
+                StreamingPlayer(name: entry.name, size: entry.size) { [connection, path] offset, length in
+                    try await connection.run { try await $0.read(path, offset: offset, length: length) }
+                }
+                .ignoresSafeArea(edges: .bottom)
+                if let saving {
+                    HStack(spacing: 10) {
+                        ProgressView(value: saving).frame(maxWidth: 160)
+                        Text("Saving… \(Int(saving * 100))%").font(.footnote).monospacedDigit()
+                    }
+                    .padding(10)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.bottom, 90)
+                }
+            }
         case .ready(let url):
             QuickLookView(url: url).ignoresSafeArea(edges: .bottom)
         case .loading(let fraction):
@@ -465,7 +484,9 @@ struct LegacyFilePreviewView: View {
 
     private func start() async {
         // The thumbnail first: it's small, and gives large or unpreviewable files a face.
-        if previewable && entry.size <= Self.autoPreviewLimit {
+        if Streamable.check(entry.name) {
+            phase = .streaming  // plays at once; Save fetches the whole file
+        } else if previewable && entry.size <= Self.autoPreviewLimit {
             loadFull()
         } else {
             phase = previewable ? .thumbnailOnly : .unsupported
@@ -491,17 +512,24 @@ struct LegacyFilePreviewView: View {
     private func fetch() async throws -> URL {
         if let cached { return cached }
         if let fetching { return try await fetching.value }
-        phase = .loading(0)
-        let dest = PreviewCache.url.appending(path: UUID().uuidString).appending(path: entry.name)
+        // Same place every time for this file: an interrupted or reopened preview resumes.
+        let dest = PreviewCache.destination(computer: connection.mac.id, path: path, entry: entry)
+        if FileManager.default.fileExists(atPath: dest.path) { cached = dest; return dest }
+        let streaming = phase == .streaming
+        if streaming { saving = 0 } else { phase = .loading(0) }
         let size = entry.size
         let task = Task { [connection, path] in
             try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try await connection.run {
-                try await $0.download(path, to: dest) { done, total in
-                    let t = total > 0 ? total : size
-                    Task { @MainActor in phase = .loading(t > 0 ? Double(done) / Double(t) : 0) }
+            // Retries while the computer reconnects; each try carries on from the saved bytes.
+            try await ResumingDownload.run({
+                try await connection.run {
+                    try await $0.download(path, to: dest, keepPartialOnCancel: true) { done, total in
+                        let t = total > 0 ? total : size
+                        let f = t > 0 ? Double(done) / Double(t) : 0
+                        Task { @MainActor in if streaming { saving = f } else { phase = .loading(f) } }
+                    }
                 }
-            }
+            }, retrying: { _ in if !streaming { notice = nil } })
             return dest
         }
         fetching = task
@@ -518,13 +546,19 @@ struct LegacyFilePreviewView: View {
             let before = phase
             do {
                 let url = try await fetch()
-                // Now the file is here anyway, show it if Quick Look can.
-                phase = previewable && QLPreviewController.canPreview(url as NSURL) ? .ready(url) : .unsupported
+                if before == .streaming {
+                    saving = nil  // keep playing
+                } else {
+                    // Now the file is here anyway, show it if Quick Look can.
+                    phase = previewable && QLPreviewController.canPreview(url as NSURL) ? .ready(url) : .unsupported
+                }
                 action(url)
             } catch is CancellationError {
                 phase = before
+                saving = nil
             } catch {
                 phase = before
+                saving = nil
                 notice = "Couldn't get the file: \(error.localizedDescription)"
             }
         }
@@ -532,16 +566,9 @@ struct LegacyFilePreviewView: View {
 
     private func saveToPhotos(_ url: URL) {
         Task {
-            let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
-            guard status == .authorized || status == .limited else {
-                notice = "Allow Teleport to add photos in Settings ▸ Privacy ▸ Photos."
-                return
-            }
             do {
                 let video = type?.conforms(to: .movie) == true
-                try await PHPhotoLibrary.shared().performChanges {
-                    PHAssetCreationRequest.forAsset().addResource(with: video ? .video : .photo, fileURL: url, options: nil)
-                }
+                try await PhotoSaver.saveFile(url, video: video)
                 notice = "Saved to Photos"
             } catch {
                 notice = "Couldn't save to Photos: \(error.localizedDescription)"

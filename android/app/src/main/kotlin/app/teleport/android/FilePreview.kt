@@ -15,6 +15,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -78,11 +81,13 @@ enum class PreviewKind { IMAGE, PDF, TEXT, MEDIA, NONE;
 class PreviewState(val entry: FileEntry, val path: String) {
     val kind = PreviewKind.of(entry.name)
     var thumbnail by mutableStateOf<Bitmap?>(null)
-    /** loading | thumb (large, waiting for "Load preview") | ready | unsupported | failed */
+    /** loading | thumb (large, waiting for "Load preview") | ready | unsupported | failed | stream (playing while on the computer) */
     var phase by mutableStateOf(if (kind == PreviewKind.NONE) "unsupported" else "loading")
     var progress by mutableFloatStateOf(0f)
     var error by mutableStateOf<String?>(null)
     var file by mutableStateOf<File?>(null)
+    /** Saving a file that's streaming: download progress, shown over the player. */
+    var saving by mutableStateOf<Float?>(null)
     var job: Job? = null
 
     companion object {
@@ -92,10 +97,23 @@ class PreviewState(val entry: FileEntry, val path: String) {
 }
 
 @Composable
-fun PreviewBody(state: PreviewState, onLoad: () -> Unit, contentPadding: PaddingValues) {
+fun PreviewBody(state: PreviewState, onLoad: () -> Unit, contentPadding: PaddingValues, stream: (Long, Int, () -> Boolean) -> ByteArray) {
     val file = state.file
     Box(Modifier.fillMaxSize().padding(contentPadding)) {
         when {
+            state.phase == "stream" -> Box(Modifier.fillMaxSize()) {
+                StreamingPlayer(state.entry.size, stream)
+                state.saving?.let { f ->
+                    Column(
+                        Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp)
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(24.dp)).padding(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        LinearProgressIndicator(progress = { f }, modifier = Modifier.width(160.dp))
+                        Text("Saving… ${(f * 100).toInt()}%", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
             state.phase == "ready" && file != null -> when (state.kind) {
                 PreviewKind.IMAGE -> ZoomableImage(file)
                 PreviewKind.PDF -> PdfPages(file)
@@ -243,4 +261,219 @@ private fun MediaPreview(file: File) {
         onRelease = { it.stopPlayback() },
         modifier = Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black),
     )
+}
+
+/**
+ * Plays video or audio while it's still on the computer: MediaPlayer reads through a
+ * MediaDataSource that fetches blocks over the encrypted session, staying a few blocks ahead
+ * of playback. Tap the picture or ▶ to play and pause; drag the bar to seek (one seek when
+ * you let go).
+ *
+ * Threading: MediaPlayer blocks while its data source waits on the network, and any call on
+ * it (even setDisplay or currentPosition) waits behind that. So every call happens on the
+ * player's own thread (`PlayerThread`), never the main thread; the screen only waits up to
+ * 250 ms when its surface goes away. Leaving closes the source first, so reads stop at once.
+ */
+@Composable
+private fun StreamingPlayer(size: Long, read: (Long, Int, () -> Boolean) -> ByteArray) {
+    val source = remember { BlockDataSource(size, read) }
+    val p = remember { PlayerThread() }
+    var playing by remember { mutableStateOf(false) }
+    var position by remember { mutableFloatStateOf(0f) }
+    var duration by remember { mutableFloatStateOf(0f) }
+    var ready by remember { mutableStateOf(false) }
+    var dragging by remember { mutableStateOf<Float?>(null) }
+    var buffering by remember { mutableStateOf(true) }
+    val main = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+
+    fun toggle() {
+        if (!ready) return
+        p.post { mp ->
+            val now = runCatching { if (mp.isPlaying) { mp.pause(); false } else { mp.start(); true } }.getOrNull()
+            if (now != null) main.post { playing = now }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        p.post { mp ->
+            mp.setDataSource(source)
+            mp.setOnPreparedListener { it.start(); val d = it.duration.toFloat(); main.post { ready = true; buffering = false; duration = d; playing = true } }
+            mp.setOnCompletionListener { main.post { playing = false } }
+            mp.setOnInfoListener { _, what, _ ->
+                when (what) {
+                    android.media.MediaPlayer.MEDIA_INFO_BUFFERING_START -> main.post { buffering = true }
+                    android.media.MediaPlayer.MEDIA_INFO_BUFFERING_END -> main.post { buffering = false }
+                }
+                false
+            }
+            mp.setOnSeekCompleteListener { main.post { buffering = false } }
+            mp.setOnErrorListener { _, _, _ -> main.post { playing = false; buffering = false }; true }
+            mp.prepareAsync()
+        }
+        onDispose {
+            source.close()  // pending reads give up, so the player thread frees up quickly
+            p.shutdown()
+        }
+    }
+    LaunchedEffect(ready) {
+        while (ready) {
+            if (dragging == null) p.post { mp -> runCatching { mp.currentPosition.toFloat() }.getOrNull()?.let { main.post { if (dragging == null) position = it } } }
+            kotlinx.coroutines.delay(250)
+        }
+    }
+    Column(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black)) {
+        Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+            AndroidView(
+                factory = { ctx ->
+                    android.view.SurfaceView(ctx).apply {
+                        holder.addCallback(object : android.view.SurfaceHolder.Callback {
+                            override fun surfaceCreated(h: android.view.SurfaceHolder) { p.post { it.setDisplay(h) } }
+                            override fun surfaceChanged(h: android.view.SurfaceHolder, f: Int, w: Int, hh: Int) {}
+                            // The surface must be released before this returns, but never block
+                            // the main thread on the network: wait briefly, then let it go.
+                            override fun surfaceDestroyed(h: android.view.SurfaceHolder) { p.postAndWait(250) { it.setDisplay(null) } }
+                        })
+                        setOnClickListener { toggle() }
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+            if (buffering) androidx.compose.material3.CircularProgressIndicator(color = androidx.compose.ui.graphics.Color.White)
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            androidx.compose.material3.IconButton(onClick = ::toggle, enabled = ready) {
+                Text(if (playing) "❚❚" else "▶", color = androidx.compose.ui.graphics.Color.White)
+            }
+            Text(clock(dragging?.times(duration) ?: position), color = androidx.compose.ui.graphics.Color.White, style = MaterialTheme.typography.labelMedium)
+            androidx.compose.material3.Slider(
+                value = dragging ?: if (duration > 0) position / duration else 0f,
+                onValueChange = { dragging = it },
+                onValueChangeFinished = {
+                    val f = dragging
+                    dragging = null
+                    if (f != null && ready && duration > 0) {
+                        position = f * duration
+                        buffering = true
+                        val to = (f * duration).toLong()
+                        p.post { runCatching { it.seekTo(to, android.media.MediaPlayer.SEEK_CLOSEST_SYNC) } }
+                    }
+                },
+                enabled = ready,
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+            )
+            Text(clock(duration), color = androidx.compose.ui.graphics.Color.White, style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+/**
+ * A MediaPlayer that's only ever touched on its own thread. It's also *created* there:
+ * MediaPlayer delivers its events (prepared, info, subtitle-track scans…) on the looper of the
+ * thread that constructed it, and those calls block on the data source too. Created on the
+ * main thread, they froze the screen.
+ */
+private class PlayerThread {
+    private val thread = android.os.HandlerThread("teleport-player").apply { start() }
+    private val handler = android.os.Handler(thread.looper)
+    private lateinit var player: android.media.MediaPlayer
+    @Volatile private var done = false
+
+    init {
+        handler.post { player = android.media.MediaPlayer() }
+    }
+
+    fun post(block: (android.media.MediaPlayer) -> Unit) {
+        if (!done) handler.post { if (!done) runCatching { block(player) } }
+    }
+
+    /** Runs [block] on the player thread, waiting at most [ms] for it. */
+    fun postAndWait(ms: Long, block: (android.media.MediaPlayer) -> Unit) {
+        if (done) return
+        val latch = java.util.concurrent.CountDownLatch(1)
+        handler.post { if (!done) runCatching { block(player) }; latch.countDown() }
+        latch.await(ms, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
+    fun shutdown() {
+        done = true
+        handler.post {
+            runCatching { player.reset() }
+            runCatching { player.release() }
+            thread.quitSafely()
+        }
+    }
+}
+
+private fun clock(ms: Float): String {
+    val s = (ms / 1000).toInt()
+    return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s / 60 % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
+}
+
+/**
+ * Serves MediaPlayer's reads from 2 MiB blocks fetched on demand, keeps a few for rewinds,
+ * and fetches the next four in the background (two at a time) so playback doesn't stall.
+ */
+private class BlockDataSource(private val total: Long, private val fetch: (Long, Int, () -> Boolean) -> ByteArray) : android.media.MediaDataSource() {
+    private val block = 2 shl 20  // the largest single read the protocol allows
+    private val lock = Object()
+    private val cache = object : LinkedHashMap<Long, ByteArray>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, ByteArray>?) = size > 12
+    }
+    private val inflight = HashSet<Long>()
+    private val prefetcher = java.util.concurrent.Executors.newFixedThreadPool(2)
+    @Volatile private var closed = false
+    private val blocks = (total + block - 1) / block
+
+    override fun getSize(): Long = total
+
+    /** A block from the cache, or fetched now (waiting for a prefetch already under way). */
+    private fun blockAt(index: Long): ByteArray? {
+        synchronized(lock) {
+            while (true) {
+                cache[index]?.let { return it }
+                if (closed) return null
+                if (index !in inflight) { inflight += index; break }
+                try { lock.wait(200) } catch (e: InterruptedException) { return null }
+            }
+        }
+        val data = runCatching { fetch(index * block, block) { closed } }.getOrNull()
+        synchronized(lock) {
+            inflight -= index
+            if (data != null) cache[index] = data
+            lock.notifyAll()
+        }
+        return data
+    }
+
+    private fun prefetch(index: Long) {
+        if (index >= blocks || closed) return
+        synchronized(lock) { if (cache.containsKey(index) || index in inflight) return }
+        runCatching { prefetcher.execute { runCatching { blockAt(index) } } }
+    }
+
+    override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+        if (closed) return -1
+        if (position >= total) return -1
+        var copied = 0
+        while (copied < size && position + copied < total) {
+            val at = position + copied
+            val index = at / block
+            val data = blockAt(index) ?: return if (copied > 0) copied else -1
+            for (ahead in 1..4) prefetch(index + ahead)
+            val within = (at - index * block).toInt()
+            if (within >= data.size) break
+            val n = minOf(size - copied, data.size - within)
+            System.arraycopy(data, within, buffer, offset + copied, n)
+            copied += n
+        }
+        return copied
+    }
+
+    override fun close() {
+        closed = true
+        synchronized(lock) { lock.notifyAll() }
+        // Not shutdownNow(): interrupting a thread mid-wait crashed the app. Closed reads end
+        // within ~200 ms by themselves.
+        prefetcher.shutdown()
+    }
 }

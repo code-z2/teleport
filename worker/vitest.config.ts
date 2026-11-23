@@ -20,7 +20,7 @@ export default defineConfig({
             miniflare: { bindings: { RELAY_KEY: "k".repeat(40), FCM_SERVICE_ACCOUNT: "{}" } },
           }),
         ],
-        test: { name: "workers", include: ["test/mailbox.test.ts"] },
+        test: { name: "workers", include: ["test/mailbox.test.ts", "test/blob-upload.test.ts"] },
       },
     ],
   },

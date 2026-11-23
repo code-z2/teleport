@@ -68,23 +68,25 @@ describe("buildMessages", () => {
     expect(m.android).toEqual({ priority: "HIGH", ttl: "300s" });
     expect(JSON.parse(m.data.env)).toEqual(ENV);
   });
-  it("ios: alert with mutable-content, plus Live Activity start when la is set", () => {
-    const [alert, la] = buildMessages({ platform: "ios", fcm: "t", la: "p2s" }, ENV, 1000) as any[];
-    expect(alert.apns.payload.aps["mutable-content"]).toBe(1);
-    expect(alert.apns.payload.aps.category).toBe("CLIP");
-    expect(JSON.parse(alert.apns.payload.env)).toEqual(ENV);
-    expect(la.apns.live_activity_token).toBe("p2s");
-    expect(la.apns.payload.aps.event).toBe("start");
-    expect(la.apns.payload.aps["attributes-type"]).toBe("ClipActivityAttributes");
-    expect(JSON.parse(la.apns.payload.aps["content-state"].env)).toEqual(ENV);
-    expect(la.apns.payload.aps["dismissal-date"]).toBe(1300);
-  });
-  it("ios: no Live Activity for peer updates or pairing", () => {
-    for (const k of ["peer", "pair", "pair-ok"] as const) {
-      const msgs = buildMessages({ platform: "ios", fcm: "t", la: "p2s" }, { ...ENV, k }, 0) as any[];
+  it("ios text and other kinds: the notification only", () => {
+    for (const k of ["text", "blob", "peer", "pair", "pair-ok", "pair-no"] as const) {
+      const msgs = buildMessages({ platform: "ios", fcm: "t", la: "p2s" }, { ...ENV, k }, 1000) as any[];
       expect(msgs).toHaveLength(1);
       expect(msgs[0].apns.payload.aps["mutable-content"]).toBe(1);
     }
+  });
+  it("ios photos and files: the notification plus a Live Activity", () => {
+    for (const hint of ["image", "file"] as const) {
+      const [alert, la] = buildMessages({ platform: "ios", fcm: "t", la: "p2s" }, { ...ENV, k: "blob" }, 1000, hint) as any[];
+      expect(alert.apns.payload.aps["mutable-content"]).toBe(1);
+      expect(la.apns.live_activity_token).toBe("p2s");
+      expect(la.apns.payload.aps.event).toBe("start");
+      expect(la.apns.payload.aps.attributes).toEqual({ kind: hint, from: ENV.from });
+      expect(JSON.parse(la.apns.payload.aps["content-state"].env)).toEqual({ ...ENV, k: "blob" });
+    }
+  });
+  it("ios photos without a Live Activity token: the notification only", () => {
+    expect(buildMessages({ platform: "ios", fcm: "t" }, { ...ENV, k: "blob" }, 1000, "image")).toHaveLength(1);
   });
   it("accepts the pairing vectors", () => {
     expect(parseEnvelope(vectors.pairing.pair.env)).toEqual(vectors.pairing.pair.env);

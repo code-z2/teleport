@@ -22,8 +22,10 @@ enum SendPhase: Equatable {
 
 /// The state and configuration both models store; the behaviour lives in the extension.
 @MainActor
-protocol SendModeling: AnyObject {
+protocol SendModeling: AnyObject, Sendable {
     var phase: SendPhase { get set }
+    /// Upload progress (0…1) while a file is sending; nil for quick clips.
+    var progress: Double? { get set }
     var peers: [Peer] { get set }
     /// Computer id → online. Missing while still checking.
     var online: [String: Bool] { get set }
@@ -31,7 +33,7 @@ protocol SendModeling: AnyObject {
     var unreachable: Set<String> { get set }
 
     var teleport: Teleport? { get }
-    var loadClip: () async throws -> Clip? { get }
+    var loadClip: () async throws -> Outgoing? { get }
     var onSent: (Peer) -> Void { get }
     var finish: () -> Void { get }
     /// Restricts the choice to one kind of device.
@@ -85,8 +87,10 @@ extension SendModeling {
         phase = .sending(peer.name)
         Task {
             do {
-                guard let clip = try await loadClip() else { return fail("There's nothing here Teleport can send.") }
-                try await teleport.send(clip, to: peer)
+                guard let outgoing = try await loadClip() else { return fail("There's nothing here Teleport can send.") }
+                try await teleport.send(outgoing, to: peer) { [weak self] sent, total in
+                    Task { @MainActor in self?.progress = total > 0 ? Double(sent) / Double(total) : nil }
+                }
                 onSent(peer)
                 phase = .done("Sent to \(peer.name)")
                 try? await Task.sleep(nanoseconds: 800_000_000)
@@ -96,7 +100,7 @@ extension SendModeling {
             } catch RelayError.peerGone {
                 fail("\(peer.name) needs to open Teleport (or re-pair).")
             } catch TeleportError.tooLarge {
-                fail("That's too large to teleport (10 MB max).")
+                fail("That's too large to teleport (250 MB max).")
             } catch {
                 fail("Couldn't send: \(error.localizedDescription)")
             }
@@ -125,12 +129,13 @@ enum SendText {
 @Observable
 final class SendModel: SendModeling {
     var phase: SendPhase = .loading
+    var progress: Double?
     var peers: [Peer] = []
     var online: [String: Bool] = [:]
     var unreachable: Set<String> = []
 
     @ObservationIgnored let teleport: Teleport?
-    @ObservationIgnored let loadClip: () async throws -> Clip?
+    @ObservationIgnored let loadClip: () async throws -> Outgoing?
     @ObservationIgnored let onSent: (Peer) -> Void
     @ObservationIgnored let finish: () -> Void
     @ObservationIgnored let only: Platform?
@@ -138,7 +143,7 @@ final class SendModel: SendModeling {
     init(
         preselected: String? = nil,
         only: Platform? = nil,
-        loadClip: @escaping () async throws -> Clip?,
+        loadClip: @escaping () async throws -> Outgoing?,
         onSent: @escaping (Peer) -> Void = { _ in },
         finish: @escaping () -> Void
     ) {
@@ -158,7 +163,7 @@ struct SendPicker: View {
 
     var body: some View {
         SendPickerContent(
-            phase: model.phase, peers: model.peers, online: model.online, unreachable: model.unreachable,
+            phase: model.phase, progress: model.progress, peers: model.peers, online: model.online, unreachable: model.unreachable,
             send: model.send(to:), cancel: model.cancel)
     }
 }
@@ -166,6 +171,7 @@ struct SendPicker: View {
 /// The layout, drawn from plain values so both the modern and the legacy model can feed it.
 struct SendPickerContent: View {
     let phase: SendPhase
+    let progress: Double?
     let peers: [Peer]
     let online: [String: Bool]
     let unreachable: Set<String>
@@ -185,7 +191,11 @@ struct SendPickerContent: View {
                 picker
             case .sending(let name):
                 VStack(spacing: 12) {
-                    ProgressView()
+                    if let progress {
+                        ProgressView(value: progress).frame(maxWidth: 240)
+                    } else {
+                        ProgressView()
+                    }
                     Text("Sending to \(name)…").foregroundStyle(.secondary)
                 }
             case .done(let message):

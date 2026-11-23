@@ -121,6 +121,7 @@ public actor FileServer {
             case "list": list(c)
             case "download": startDownload(c)
             case "thumbnail": startThumbnail(c)
+            case "read": readRange(c)
             case "upload": startUpload(c)
             case "done": finishUpload(c)
             case "ack":
@@ -267,6 +268,28 @@ public actor FileServer {
         }
     }
 
+    // MARK: Read (byte ranges, for streaming video)
+
+    /// `read { path, offset, size }`: up to 2 MiB from `offset` as data frames, then `done`.
+    /// A player asks for whatever it needs next (including after seeking).
+    private func readRange(_ c: Control) {
+        let id = c.id
+        do {
+            let url = try resolve(c.path ?? "")
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            try handle.seek(toOffset: UInt64(max(0, c.offset ?? 0)))
+            var left = min(max(0, Int(c.size ?? 0)), SessionCrypto.maxRead)
+            while left > 0, let chunk = try handle.read(upToCount: min(left, SessionCrypto.chunkSize)), !chunk.isEmpty {
+                send(.data(id, chunk))
+                left -= chunk.count
+            }
+            send(.control(Control("done", id: id)))
+        } catch {
+            pathError(id, error)
+        }
+    }
+
     // MARK: Thumbnail
 
     /// A Quick Look thumbnail as JPEG: `meta`, data, `done`, like a small download.
@@ -392,7 +415,7 @@ public actor FileServer {
     }
 
     /// `name`, or `name (2).ext`, `name (3).ext`… whichever is free.
-    static func uniqueName(_ name: String, in dir: URL) -> String {
+    public static func uniqueName(_ name: String, in dir: URL) -> String {
         let fm = FileManager.default
         guard fm.fileExists(atPath: dir.appending(path: name).path) else { return name }
         let ext = (name as NSString).pathExtension

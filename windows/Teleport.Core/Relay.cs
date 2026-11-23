@@ -47,15 +47,18 @@ public sealed class RelayClient(RelayConfig config, HttpClient? http = null)
         return body;
     }
 
-    public async Task SendAsync(Envelope env, Peer to, CancellationToken ct = default)
+    /// `hint: "file"` for large files: an iPhone gets a Live Activity instead of a notification.
+    public async Task SendAsync(Envelope env, Peer to, CancellationToken ct = default, string? hint = null)
     {
         // Computers are reached through their mailbox; phones by push.
         object recipient = to.HasMailbox
             ? (object)new { platform = to.Platform, mailbox = to.Mailbox }
             : to.Fcm is { Length: > 0 } fcm
-                ? new { platform = to.Platform, fcm, la = to.Platform == "ios" ? to.La : null }
+                ? new { platform = to.Platform, fcm, la = to.Platform == "ios" && !string.IsNullOrEmpty(to.La) ? to.La : null }
                 : throw new RelayException(0, $"{to.Name} has no push address yet.");
-        var json = $$"""{"to":{{Wire.Serialize(recipient)}},"env":{{env.ToJson()}}}""";
+        var json = hint is null
+            ? $$"""{"to":{{Wire.Serialize(recipient)}},"env":{{env.ToJson()}}}"""
+            : $$"""{"to":{{Wire.Serialize(recipient)}},"env":{{env.ToJson()}},"hint":"{{hint}}"}""";
         var r = Request(HttpMethod.Post, "v1/send");
         r.Content = new StringContent(json, Encoding.UTF8, "application/json");
         await CallAsync(r, ct);
@@ -71,6 +74,59 @@ public sealed class RelayClient(RelayConfig config, HttpClient? http = null)
     }
 
     public Task<byte[]> GetBlobAsync(string id, CancellationToken ct = default) => CallAsync(Request(HttpMethod.Get, $"v1/blob/{id}"), ct);
+
+    // ---------- large blobs (SPEC.md "Large blobs") ----------
+
+    public sealed record Upload(string Id, string UploadId)
+    {
+        public string Path => $"v1/blob/upload/{Id}/{Uri.EscapeDataString(UploadId)}";
+    }
+
+    public async Task<Upload> StartUploadAsync(CancellationToken ct = default)
+    {
+        var body = JsonNode.Parse(await CallAsync(Request(HttpMethod.Post, "v1/blob/upload"), ct))!;
+        return new Upload(body["id"]!.GetValue<string>(), body["upload"]!.GetValue<string>());
+    }
+
+    /// Uploads one part (1-based); returns its etag.
+    public async Task<string> UploadPartAsync(Upload u, int part, ReadOnlyMemory<byte> bytes, CancellationToken ct = default)
+    {
+        var r = Request(HttpMethod.Put, $"{u.Path}/{part}");
+        r.Content = new ReadOnlyMemoryContent(bytes);
+        r.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        return JsonNode.Parse(await CallAsync(r, ct))!["etag"]!.GetValue<string>();
+    }
+
+    public async Task CompleteUploadAsync(Upload u, IReadOnlyList<string> etags, CancellationToken ct = default)
+    {
+        var parts = etags.Select((etag, i) => new { part = i + 1, etag });
+        var r = Request(HttpMethod.Post, $"{u.Path}/complete");
+        r.Content = new StringContent(Wire.Serialize(new { parts }), Encoding.UTF8, "application/json");
+        await CallAsync(r, ct);
+    }
+
+    public async Task AbortUploadAsync(Upload u)
+    {
+        try { await CallAsync(Request(HttpMethod.Delete, u.Path), CancellationToken.None); } catch (Exception) { }
+    }
+
+    /// Streams a blob into `output` (no 250 MB in memory), reporting bytes so far and the total.
+    public async Task DownloadBlobAsync(string id, Stream output, Action<long, long>? progress = null, CancellationToken ct = default)
+    {
+        using var res = await _http.SendAsync(Request(HttpMethod.Get, $"v1/blob/{id}"), HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!res.IsSuccessStatusCode) throw new RelayException((int)res.StatusCode, $"Relay error {(int)res.StatusCode}");
+        var total = res.Content.Headers.ContentLength ?? 0;
+        await using var input = await res.Content.ReadAsStreamAsync(ct);
+        var buffer = new byte[256 * 1024];
+        long done = 0;
+        int n;
+        while ((n = await input.ReadAsync(buffer, ct)) > 0)
+        {
+            await output.WriteAsync(buffer.AsMemory(0, n), ct);
+            done += n;
+            progress?.Invoke(done, total);
+        }
+    }
 
     public async Task DeleteBlobAsync(string id, CancellationToken ct = default) => await CallAsync(Request(HttpMethod.Delete, $"v1/blob/{id}"), ct);
 

@@ -167,3 +167,29 @@ test("session: frames", async () => {
 test("session: path rules", () => {
   for (const p of sv.session.paths) assert.equal(checkPath(p.path, p.hidden), p.ok, p.path);
 });
+
+// ---------- chunked blobs ----------
+import { openBlobChunked, sealBlobChunked } from "./teleport.ts";
+
+test("chunked blobs: seal matches, open round-trips", async () => {
+  const c = sv.chunked;
+  for (const k of c.cases) {
+    const plain = unb64u(k.plaintext);
+    assert.equal(b64u(await sealBlobChunked(plain, unb64u(c.key), unb64u(c.n), c.c)), k.ciphertext, k.name);
+    assert.equal(b64u(await openBlobChunked(unb64u(k.ciphertext), unb64u(c.key), unb64u(c.n), plain.length, c.c)), k.plaintext, k.name);
+  }
+});
+
+test("chunked blobs: truncation, reordering and a wrong size are rejected", async () => {
+  const c = sv.chunked;
+  const k = c.cases[0]; // 25 bytes in chunks of 10: 26 + 26 + 21 bytes of ciphertext
+  const ct = unb64u(k.ciphertext);
+  const key = unb64u(c.key), n = unb64u(c.n);
+  // Dropping the last chunk and claiming 20 bytes: chunk 1 isn't marked final.
+  await assert.rejects(openBlobChunked(ct.subarray(0, 52), key, n, 20, c.c));
+  // Swapping the first two chunks.
+  const swapped = new Uint8Array([...ct.subarray(26, 52), ...ct.subarray(0, 26), ...ct.subarray(52)]);
+  await assert.rejects(openBlobChunked(swapped, key, n, 25, c.c));
+  // Wrong declared size.
+  await assert.rejects(openBlobChunked(ct, key, n, 24, c.c));
+});

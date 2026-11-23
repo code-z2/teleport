@@ -255,3 +255,40 @@ private final class Counter: @unchecked Sendable {
     await #expect(throws: FileSessionError.self) { _ = try await client.thumbnail(".ssh/id_ed25519") }
     await client.close()
 }
+
+@Test func rangeReadsForStreaming() async throws {
+    let f = try Fixture()
+    let data = Data((0..<(3 * 1024 * 1024)).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+    try data.write(to: f.home.appending(path: "Documents/video.mp4"))
+    let (client, _) = try await f.connect()
+    #expect(try await client.read("Documents/video.mp4", offset: 1000, length: 5000) == data[1000..<6000])
+    // Capped at 2 MiB per read; reading past the end returns what's there.
+    #expect(try await client.read("Documents/video.mp4", offset: 0, length: 9_000_000).count == 2 * 1024 * 1024)
+    #expect(try await client.read("Documents/video.mp4", offset: Int64(data.count - 10), length: 100) == data.suffix(10))
+    await client.close()
+}
+
+@Test func interruptedDownloadResumes() async throws {
+    let f = try Fixture()
+    let big = Data((0..<(6 * 1024 * 1024 + 99)).map { UInt8(truncatingIfNeeded: $0 &* 17) })
+    try big.write(to: f.home.appending(path: "Documents/big.bin"))
+    let dest = FileManager.default.temporaryDirectory.appending(path: "resume-\(UUID().uuidString).bin")
+
+    // First attempt: the connection drops part-way (we close the session at ~2 MiB).
+    let (first, _) = try await f.connect()
+    await #expect(throws: FileSessionError.self) {
+        try await first.download("Documents/big.bin", to: dest) { done, _ in
+            if done > 2 * 1024 * 1024 { Task { await first.close() } }
+        }
+    }
+    let kept = (try? FileManager.default.attributesOfItem(atPath: FileSessionClient.partialURL(for: dest).path)[.size] as? Int) ?? 0
+    #expect(kept > 0)
+
+    // Second attempt on a new session picks up from there and verifies the whole file.
+    let (second, _) = try await f.connect()
+    let firstByte = Counter()
+    try await second.download("Documents/big.bin", to: dest) { done, _ in if firstByte.value == 0 { firstByte.set(done) } }
+    #expect(firstByte.value >= Int64(kept))  // didn't start from zero
+    #expect(try Data(contentsOf: dest) == big)
+    await second.close()
+}

@@ -109,16 +109,18 @@ public static class Program
     /// Files from Explorer's "Send to ▸ Teleport": pick a device (if several), then send each.
     private static void HandleSend(AppModel model, string[] files)
     {
-        var clips = files.Select(f => (file: f, clip: AppModel.ClipFromFile(f))).Where(x => x.clip is not null).ToList();
-        if (clips.Count == 0) { model.Toast("Nothing to send", "Teleport can send files up to 10 MB."); return; }
-        var tooBig = clips.Where(x => x.clip is Clip.Bytes b && b.Data.Length + 16 > TeleportClient.MaxBlobBytes).ToList();
-        if (tooBig.Count > 0) { model.Toast("Too large to teleport", $"{Path.GetFileName(tooBig[0].file)} is over 10 MB."); return; }
+        // Small images and text go as clips (they land on the clipboard); anything else as a file.
+        var clips = files.Where(File.Exists).Select(f => (file: f, clip: AppModel.ClipFromFile(f))).ToList();
+        if (clips.Count == 0) { model.Toast("Nothing to send", "Teleport sends files up to 250 MB (not folders)."); return; }
+        var tooBig = clips.Where(x => x.clip is null && new FileInfo(x.file).Length > TeleportClient.MaxFileBytes).ToList();
+        if (tooBig.Count > 0) { model.Toast("Too large to teleport", $"{Path.GetFileName(tooBig[0].file)} is over 250 MB."); return; }
 
         void SendAll(Peer peer)
         {
             _ = Task.Run(async () =>
             {
-                foreach (var (_, clip) in clips) await Application.Current.Dispatcher.InvokeAsync(() => model.SendAsync(clip!, peer)).Task.Unwrap();
+                foreach (var (file, clip) in clips)
+                    await Application.Current.Dispatcher.InvokeAsync(() => clip is null ? model.SendFileAsync(file, peer) : model.SendAsync(clip, peer)).Task.Unwrap();
             });
         }
 

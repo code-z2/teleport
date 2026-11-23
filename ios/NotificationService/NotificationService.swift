@@ -57,11 +57,27 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             let teleport = try Teleport()
             switch try await teleport.receive(env, firstDelivery: true) {
             case .clip(.text(let text), _, let from):
-                return Rendered(title: "Clip from \(from.name)", body: String(text.prefix(300)))
+                // Text: tap copies it (iOS only shows action buttons on a long-press).
+                return Rendered(title: "From \(from.name) · tap to copy", body: String(text.prefix(300)))
             case .clip(.image(let data, let mime), let id, let from):
+                // A photo: already downloaded and decrypted here. Its Live Activity carries Copy / Save.
+                let ext = mime == "image/png" ? "png" : mime == "image/gif" ? "gif" : "jpg"
+                let item = InboxItem(id: id, env: env, name: "Photo.\(ext)", mime: mime, size: data.count, from: from.name, state: .ready)
+                teleport.inbox.prune()
+                teleport.inbox.put(item)
+                try? data.write(to: teleport.inbox.file(item))
                 return Rendered(
-                    title: "Image from \(from.name)", body: "Press and hold to Copy or Save to Photos",
-                    attachment: writeAttachment(data, mime: mime, id: id), category: "CLIP_IMAGE")
+                    title: "Teleport", body: "You received a photo from \(from.name)",
+                    attachment: writeAttachment(data, mime: mime, id: id), category: "FILE_NOTICE")
+            case .file(let p, let id, let from):
+                // Too big to fetch here (~24 MB, ~30 s): hand the download to the system, which
+                // carries on even when locked. The app decrypts it and updates the Live Activity.
+                let name = p.name ?? (p.mime.hasPrefix("video/") ? "Video" : "File")
+                teleport.inbox.prune()
+                teleport.inbox.put(InboxItem(id: id, env: env, name: name, mime: p.mime, size: p.size, from: from.name, state: .downloading))
+                InboxDownloads.start(teleport.blobRequest(p), id: id)
+                let size = ByteCountFormatter.string(fromByteCount: Int64(p.size), countStyle: .file)
+                return Rendered(title: "Teleport", body: "You received \(name) (\(size)) from \(from.name)", category: "FILE_NOTICE")
             case .pairRequest(let request):
                 return Rendered(
                     title: "\(request.name) wants to pair",

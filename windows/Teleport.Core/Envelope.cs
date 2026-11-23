@@ -34,8 +34,76 @@ public sealed class OpenException(string code) : Exception(code)
     public string Code { get; } = code;
 }
 
-/// Plaintext of a `blob` envelope.
-public sealed record BlobPointer(string Id, string Mime, long Size, string Key, string N);
+/// Plaintext of a `blob` envelope. `C` (chunk size) marks a chunked large blob; `Name` is the file name.
+public sealed record BlobPointer(string Id, string Mime, long Size, string Key, string N, long? C = null, string? Name = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsChunked => C is not null;
+}
+
+/// Large blobs (SPEC.md "Large blobs"): AES-GCM per chunk, with the chunk index and a
+/// final-chunk marker authenticated, so the stream can't be reordered or cut short.
+public static class ChunkedBlob
+{
+    public const int Chunk = 4 * 1024 * 1024;
+    public const long MaxSize = 250L * 1024 * 1024;
+    /// Multipart part size: R2 needs equal parts (≥ 5 MiB) except the last.
+    public const int Part = 16 * 1024 * 1024;
+
+    public static int Count(long size, long chunk = Chunk) => (int)Math.Max(1, (size + chunk - 1) / chunk);
+
+    private static byte[] Nonce(byte[] n, int i)
+    {
+        var o = (byte[])n.Clone();
+        var tail = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(o.AsSpan(4)) ^ (ulong)i;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(o.AsSpan(4), tail);
+        return o;
+    }
+
+    private static byte[] Aad(int i, bool last)
+    {
+        var tail = new byte[9];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(tail, (ulong)i);
+        tail[8] = last ? (byte)1 : (byte)0;
+        return [.. TeleportCrypto.BlobAad, .. tail];
+    }
+
+    public static byte[] Seal(byte[] chunk, int index, bool last, byte[] key, byte[] n) => Primitives.Seal(key, Nonce(n, index), chunk, Aad(index, last));
+
+    public static byte[] Open(byte[] sealedChunk, int index, bool last, byte[] key, byte[] n)
+    {
+        try { return Primitives.Open(key, Nonce(n, index), sealedChunk, Aad(index, last)); }
+        catch (CryptographicException) { throw new OpenException("decrypt"); }
+    }
+
+    /// Whole-buffer helpers (tests, small inputs).
+    public static byte[] Seal(byte[] bytes, byte[] key, byte[] n, int chunk = Chunk)
+    {
+        var total = Count(bytes.Length, chunk);
+        var output = new MemoryStream();
+        for (var i = 0; i < total; i++)
+        {
+            var lo = i * chunk;
+            output.Write(Seal(bytes[lo..Math.Min(lo + chunk, bytes.Length)], i, i == total - 1, key, n));
+        }
+        return output.ToArray();
+    }
+
+    public static byte[] Open(byte[] ct, long size, byte[] key, byte[] n, int chunk = Chunk)
+    {
+        var total = Count(size, chunk);
+        if (ct.Length != size + 16L * total) throw new OpenException("decrypt");
+        var output = new MemoryStream();
+        var offset = 0;
+        for (var i = 0; i < total; i++)
+        {
+            var plain = i == total - 1 ? (int)(size - (long)i * chunk) : chunk;
+            output.Write(Open(ct[offset..(offset + plain + 16)], i, i == total - 1, key, n));
+            offset += plain + 16;
+        }
+        return output.ToArray();
+    }
+}
 
 /// Plaintext of a `peer` envelope. Missing fields keep their old values.
 public sealed record PeerUpdate(string? Name = null, string? Fcm = null, string? La = null, string? Mailbox = null);

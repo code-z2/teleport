@@ -23,7 +23,7 @@ final class ShareViewController: UIViewController {
         let picker = SendPickerFactory.make(
             preselected: recipient,
             only: only,
-            loadClip: { [weak self] in try await ClipExtractor.clip(from: self?.extensionContext?.inputItems ?? []) },
+            loadClip: { [weak self] in try await ClipExtractor.outgoing(from: self?.extensionContext?.inputItems ?? []) },
             onSent: { ShareSuggestion.donate(for: $0) },
             finish: { context?.completeRequest(returningItems: nil) })
 

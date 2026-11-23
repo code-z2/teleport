@@ -10,7 +10,7 @@ final class ShareViewController: NSViewController {
     override func loadView() {
         let context = extensionContext
         let model = SendModel(
-            loadClip: { await MacClipReader.clip(from: context?.inputItems ?? []) },
+            loadClip: { await MacClipReader.outgoing(from: context?.inputItems ?? []) },
             finish: { context?.completeRequest(returningItems: nil) })
         let host = NSHostingView(rootView: SendPicker(model: model))
         host.frame = NSRect(x: 0, y: 0, width: 380, height: 320)
@@ -22,8 +22,29 @@ final class ShareViewController: NSViewController {
 /// Reads the shared item: an image if there is one, then a URL, then text.
 @MainActor
 enum MacClipReader {
-    static func clip(from items: [Any]) async -> Clip? {
+    /// Files (from Finder) first, then the clip readers below.
+    static func outgoing(from items: [Any]) async -> Outgoing? {
         let providers = (items as? [NSExtensionItem] ?? []).flatMap { $0.attachments ?? [] }
+        if let p = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }),
+           let url = await fileURL(p), let out = Pasteboard.outgoing(file: url) {
+            return out
+        }
+        return await clip(from: providers).map(Outgoing.clip)
+    }
+
+    private static func fileURL(_ provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { cont in
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                switch item {
+                case let url as URL: cont.resume(returning: url)
+                case let d as Data: cont.resume(returning: URL(dataRepresentation: d, relativeTo: nil))
+                default: cont.resume(returning: nil)
+                }
+            }
+        }
+    }
+
+    static func clip(from providers: [NSItemProvider]) async -> Clip? {
         if let p = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }),
            let data = await load(p, UTType.image) {
             return portableImage(data)

@@ -43,7 +43,71 @@ class OpenException(val code: String) : Exception(code)
 
 /** Plaintext of a `blob` envelope. */
 @Serializable
-data class BlobPointer(val id: String, val mime: String, val size: Long, val key: String, val n: String)
+data class BlobPointer(
+    val id: String, val mime: String, val size: Long, val key: String, val n: String,
+    /** Plaintext chunk size of a chunked (large) blob; null for the single-box format. */
+    val c: Long? = null,
+    /** The original file name, for files. */
+    val name: String? = null,
+) {
+    val isChunked: Boolean get() = c != null
+}
+
+/**
+ * Large blobs (SPEC.md "Large blobs"): AES-GCM per chunk, with the chunk index and a
+ * final-chunk marker authenticated, so the stream can't be reordered or cut short.
+ */
+object ChunkedBlob {
+    const val CHUNK = 4 * 1024 * 1024
+    const val MAX_SIZE = 250L * 1024 * 1024
+    /** Multipart part size: R2 needs equal parts (≥ 5 MiB) except the last. */
+    const val PART = 16 * 1024 * 1024
+
+    fun count(size: Long, chunk: Long = CHUNK.toLong()): Int = maxOf(1L, (size + chunk - 1) / chunk).toInt()
+
+    private fun nonce(n: ByteArray, i: Int): ByteArray {
+        val out = n.copyOf()
+        val buf = java.nio.ByteBuffer.wrap(out)
+        buf.putLong(4, buf.getLong(4) xor i.toLong())
+        return out
+    }
+
+    private fun aad(i: Int, last: Boolean): ByteArray =
+        TeleportCrypto.BLOB_AAD + java.nio.ByteBuffer.allocate(9).putLong(i.toLong()).put(if (last) 1 else 0).array()
+
+    fun seal(chunk: ByteArray, index: Int, last: Boolean, key: ByteArray, n: ByteArray): ByteArray =
+        Primitives.aesGcm(true, key, nonce(n, index), chunk, aad(index, last))
+
+    fun open(sealed: ByteArray, index: Int, last: Boolean, key: ByteArray, n: ByteArray): ByteArray = try {
+        Primitives.aesGcm(false, key, nonce(n, index), sealed, aad(index, last))
+    } catch (e: java.security.GeneralSecurityException) {
+        throw OpenException("decrypt")
+    }
+
+    /** Whole-buffer helpers (tests, small inputs). */
+    fun seal(bytes: ByteArray, key: ByteArray, n: ByteArray, chunk: Int = CHUNK): ByteArray {
+        val total = count(bytes.size.toLong(), chunk.toLong())
+        val out = java.io.ByteArrayOutputStream()
+        for (i in 0 until total) {
+            val lo = i * chunk
+            out.write(seal(bytes.copyOfRange(lo, minOf(lo + chunk, bytes.size)), i, i == total - 1, key, n))
+        }
+        return out.toByteArray()
+    }
+
+    fun open(ct: ByteArray, size: Long, key: ByteArray, n: ByteArray, chunk: Int = CHUNK): ByteArray {
+        val total = count(size, chunk.toLong())
+        if (ct.size.toLong() != size + 16L * total) throw OpenException("decrypt")
+        val out = java.io.ByteArrayOutputStream()
+        var offset = 0
+        for (i in 0 until total) {
+            val plain = if (i == total - 1) (size - i.toLong() * chunk).toInt() else chunk
+            out.write(open(ct.copyOfRange(offset, offset + plain + 16), i, i == total - 1, key, n))
+            offset += plain + 16
+        }
+        return out.toByteArray()
+    }
+}
 
 /** Plaintext of a `peer` envelope: renamed or new push address. Missing fields keep their old values. */
 @Serializable

@@ -15,6 +15,8 @@ public enum SessionCrypto {
     public static let window: Int64 = 2 * 1024 * 1024
     /// The receiver acknowledges at least this often.
     public static let ackEvery: Int64 = 1024 * 1024
+    /// Largest `read` (a byte range, for streaming): within one window, so no acks needed.
+    public static let maxRead = 2 * 1024 * 1024
 
     public struct Hello: Codable, Sendable {
         public var t = "hello"

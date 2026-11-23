@@ -90,6 +90,10 @@ E2EE and signed.
 |---|---|---|---|
 | POST | `/v1/send` | `{ "to": { "platform":"ios"\|"android", "fcm":"…", "la"?:"…" }, "env": Envelope }` | `{ "ok":true }` |
 | PUT | `/v1/blob` | ciphertext bytes (≤ 10 MB) | `{ "id":"…" }` |
+| POST | `/v1/blob/upload` | — | `{ "id":"…", "upload":"…" }`: starts a large upload (see "Large blobs") |
+| PUT | `/v1/blob/upload/:id/:upload/:part` | ciphertext bytes (≤ 32 MiB) | `{ "etag":"…" }` |
+| POST | `/v1/blob/upload/:id/:upload/complete` | `{ "parts":[{ "part":1, "etag":"…" }, …] }` | `{ "ok":true }` |
+| DELETE | `/v1/blob/upload/:id/:upload` | — | `204` (abandons it) |
 | GET | `/v1/blob/:id` | — | ciphertext bytes |
 | DELETE | `/v1/blob/:id` | — | `204` |
 
@@ -292,8 +296,9 @@ All paths are relative to the Mac user's home folder, `/`-separated; `""` is hom
 | Phone sends | Mac replies |
 |---|---|
 | `{"op":"list","id","path"}` | `{"op":"entries","id","path","entries":[{"name","dir","size","mtime"}]}`, folders first, then by name |
-| `{"op":"download","id","path","offset"?}` | `{"op":"meta","id","size","mime"}`, data frames from `offset`, then `{"op":"done","id","sha256"}` (SHA-256 of the whole file, b64u) |
+| `{"op":"download","id","path","offset"?}` | `{"op":"meta","id","size","mime"}`, data frames from `offset`, then `{"op":"done","id","sha256"}` (SHA-256 of the whole file, b64u). To resume a download cut off part-way, the phone keeps the bytes it has, rehashes them and asks again with `offset` |
 | `{"op":"upload","id","dir","name","size"}` | `{"op":"ready","id","name"}` (the final name; a clash becomes `name (2).ext`). The phone sends data frames, then `{"op":"done","id","sha256"}`; the Mac checks the hash, moves the file into place and replies `{"op":"saved","id","name"}` |
+| `{"op":"read","id","path","offset","size"}` | Up to 2 MiB (`size`, capped) from `offset` as data frames, then `{"op":"done","id"}`; no acks (it fits one window). For streaming: a player reads what it needs next, including after seeking |
 | `{"op":"thumbnail","id","path","px"}` | A Quick Look thumbnail as JPEG, longest side `px` (64–1024, default 512): `meta` (`mime` `image/jpeg`), data frames, `done`, as for a download but without acks. `{"op":"error","code":"unsupported"}` if the Mac can't render one |
 | `{"op":"cancel","id"}` | Either side may send it. The transfer stops; a cancelled upload leaves no file |
 | | `{"op":"error","id","code","message"}`, `code` ∈ `not_found`, `denied`, `bad_path`, `exists`, `io`, `hash`, `busy`, `unsupported` |
@@ -309,3 +314,43 @@ unacknowledged, so neither the relay nor the receiver buffers a whole file.
   a top-level `Library`.
 - Resolve symlinks and reject anything whose real path is outside the home folder.
 - Listings omit what the rules would reject.
+
+# Large blobs (up to 250 MB)
+
+Clips over 10 MB, and any file, can be sent as a **chunked blob**. The envelope is still a
+`blob` envelope; its pointer gains two fields:
+
+```json
+{ "id":"…", "mime":"video/mp4", "size":<bytes>, "key":b64u(32), "n":b64u(12),
+  "c":4194304, "name"?:"Holiday.mp4" }
+```
+
+- `c` is the plaintext chunk size. Its presence means the chunked format; pointers
+  without it use the single AES-GCM format above, so small clips are unchanged.
+- `name` is the original file name, if there was one.
+- `size` is at most 250 MiB (262 144 000 bytes); larger sends are refused by the sender.
+
+**Format.** The plaintext is split into `count = max(1, ceil(size / c))` chunks; every
+chunk but the last is exactly `c` bytes (an empty file is one empty chunk). The blob body
+is the concatenation of, for chunk `i` (from 0):
+
+```
+nonce_i = n[0..4] ‖ (n[4..12] XOR u64be(i))
+aad_i   = "teleport/v1/blob" ‖ u64be(i) ‖ (i == count − 1 ? 0x01 : 0x00)
+AES-256-GCM(key, nonce_i, chunk_i, aad_i)          (ciphertext ‖ 16-byte tag)
+```
+
+The receiver knows `size` and `c` from the signed pointer, so it reads exactly
+`size + 16 × count` bytes and opens each chunk in order. A reordered, dropped, repeated
+or truncated chunk fails to authenticate, as does a stream that ends early, because the
+final chunk's AAD carries the end marker. Both sides stream: neither needs the whole file
+in memory.
+
+**Upload.** Through R2 multipart uploads, because the relay can't accept a 250 MB body in
+one request: `POST /v1/blob/upload`, then the body in parts of 16 MiB (every part but the
+last the same size, as R2 requires), then `complete`. The relay refuses a completed blob
+over 250 MiB + overhead and deletes it. `GET /v1/blob/:id` streams it back; the recipient
+deletes it after download, and the 1-day lifecycle rule is the backstop.
+
+**Delivery.** Large files go to Downloads (Mac, Windows, Android) or are offered from the
+notification (iPhone); only images that fit the old limit go to the clipboard.

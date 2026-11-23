@@ -19,7 +19,7 @@ final class MacConnection {
     init(teleport: Teleport, mac: Peer) {
         self.teleport = teleport
         self.mac = mac
-        try? FileManager.default.removeItem(at: PreviewCache.url)
+        PreviewCache.prune()
     }
 
     private func session() async throws -> FileSessionClient {

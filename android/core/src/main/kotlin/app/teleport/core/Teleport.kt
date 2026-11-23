@@ -52,7 +52,10 @@ class Teleport(
     private val platform: String = "android",
 ) {
     companion object {
+        /** Clips (text, images) up to this go as one sealed blob and land on the clipboard. */
         const val MAX_BLOB_BYTES = 10 * 1024 * 1024
+        /** Files up to this go as chunked blobs (SPEC.md "Large blobs"). */
+        const val MAX_FILE_BYTES = ChunkedBlob.MAX_SIZE
         private const val PAIR_WINDOW_MS = 10 * 60_000L
     }
 
@@ -146,7 +149,8 @@ class Teleport(
         val id = relay.putBlob(sealed.ciphertext)
         val pointer = BlobPointer(id, mime, bytes.size.toLong(), sealed.key.b64u(), sealed.nonce.b64u())
         val pt = TeleportJson.encodeToString(BlobPointer.serializer(), pointer).toByteArray()
-        relay.send(TeleportCrypto.seal(KIND_BLOB, pt, signing, peer.kaBytes), peer)
+        // Photos get an iPhone Live Activity (Copy / Save); long text stays a plain notification.
+        relay.send(TeleportCrypto.seal(KIND_BLOB, pt, signing, peer.kaBytes), peer, hint = if (mime.startsWith("image/")) "image" else null)
     }
 
     // ---------- receive ----------
@@ -207,6 +211,84 @@ class Teleport(
             }
             else -> throw OpenException("kind")
         }
+    }
+
+    /**
+     * Sends a file of up to 250 MB as a chunked blob, streaming from [input]: read, sealed and
+     * uploaded 16 MiB at a time. Blocking; call from Dispatchers.IO.
+     */
+    fun sendFile(
+        input: java.io.InputStream, size: Long, mime: String, name: String?, to: Peer,
+        cancelled: () -> Boolean = { false }, progress: (sent: Long, total: Long) -> Unit = { _, _ -> },
+    ) {
+        if (size > MAX_FILE_BYTES) throw TooLargeException()
+        val key = randomBytes(32)
+        val n = randomBytes(12)
+        val chunks = ChunkedBlob.count(size)
+        val total = size + 16L * chunks
+        val upload = relay.startUpload()
+        try {
+            val pending = java.io.ByteArrayOutputStream(ChunkedBlob.PART + ChunkedBlob.CHUNK + 64)
+            val etags = mutableListOf<String>()
+            var sent = 0L
+            progress(0, total)
+            fun flush(bytes: ByteArray) {
+                etags += relay.uploadPart(upload, etags.size + 1, bytes)
+                sent += bytes.size
+                progress(sent, total)
+            }
+            val buf = ByteArray(ChunkedBlob.CHUNK)
+            for (i in 0 until chunks) {
+                if (cancelled()) throw java.util.concurrent.CancellationException()
+                val read = input.readNBytes(buf, 0, buf.size)
+                pending.write(ChunkedBlob.seal(buf.copyOf(read), i, i == chunks - 1, key, n))
+                // Equal-sized parts (R2 requires it); the remainder goes last.
+                while (pending.size() >= ChunkedBlob.PART) {
+                    val all = pending.toByteArray()
+                    flush(all.copyOfRange(0, ChunkedBlob.PART))
+                    pending.reset()
+                    pending.write(all, ChunkedBlob.PART, all.size - ChunkedBlob.PART)
+                }
+            }
+            if (pending.size() > 0 || etags.isEmpty()) flush(pending.toByteArray())
+            relay.completeUpload(upload, etags)
+        } catch (e: Exception) {
+            relay.abortUpload(upload)
+            throw e
+        }
+        val pointer = BlobPointer(upload.id, mime, size, key.b64u(), n.b64u(), c = ChunkedBlob.CHUNK.toLong(), name = name)
+        val pt = TeleportJson.encodeToString(BlobPointer.serializer(), pointer).toByteArray()
+        relay.send(TeleportCrypto.seal(KIND_BLOB, pt, signing, to.kaBytes), to, hint = "file")
+    }
+
+    /**
+     * Downloads a chunked blob into [scratch] (ciphertext, deleted afterwards), then decrypts it
+     * into [out] a chunk at a time, and deletes it from the relay. Blocking.
+     */
+    fun downloadFile(
+        p: BlobPointer, out: java.io.OutputStream, scratch: java.io.File,
+        cancelled: () -> Boolean = { false }, progress: (done: Long, total: Long) -> Unit = { _, _ -> },
+    ) {
+        val chunk = p.c?.takeIf { it > 0 } ?: throw OpenException("encoding")
+        if (p.size > MAX_FILE_BYTES) throw OpenException("encoding")
+        val key = p.key.unb64u()
+        val n = p.n.unb64u()
+        try {
+            scratch.outputStream().use { relay.downloadBlob(p.id, it, cancelled, progress) }
+            val chunks = ChunkedBlob.count(p.size, chunk)
+            if (scratch.length() != p.size + 16L * chunks) throw OpenException("decrypt")
+            scratch.inputStream().use { input ->
+                for (i in 0 until chunks) {
+                    val plain = if (i == chunks - 1) (p.size - i * chunk).toInt() else chunk.toInt()
+                    val sealed = input.readNBytes(plain + 16)
+                    if (sealed.size != plain + 16) throw OpenException("decrypt")
+                    out.write(ChunkedBlob.open(sealed, i, i == chunks - 1, key, n))
+                }
+            }
+        } finally {
+            scratch.delete()
+        }
+        runCatching { relay.deleteBlob(p.id) }
     }
 
     /** Downloads and decrypts a blob, then deletes it from the relay. Throws IOException on network failure. */

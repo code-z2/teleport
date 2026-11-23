@@ -29,7 +29,16 @@ const ALERT_BODY: Record<Envelope["k"], string> = {
 
 // ---------- messages ----------
 
-export function buildMessages(to: Recipient, env: Envelope, now: number): object[] {
+/** What the sender says about a blob, so the right alerts are used. Never content. */
+export type Hint = "file" | "image";
+
+/**
+ * iPhones: always a notification (the NSE decrypts it: text with tap-to-copy; for photos and
+ * files, "You received <name> from <device>" and it starts the download). Photos and files
+ * also get a Live Activity (push-to-start, iOS 17.2+) that shows the download and carries
+ * Copy / Save / Cancel. Android gets one data message.
+ */
+export function buildMessages(to: Recipient, env: Envelope, now: number, hint?: Hint): object[] {
   const envString = JSON.stringify(env);
   const expiry = now + TTL_SECONDS;
 
@@ -51,7 +60,7 @@ export function buildMessages(to: Recipient, env: Envelope, now: number): object
           "apns-priority": "10",
           "apns-push-type": "alert",
           "apns-expiration": String(expiry),
-          "apns-collapse-id": "teleport-clip",
+          "apns-collapse-id": `teleport-${env.id}`,
         },
         payload: {
           aps: {
@@ -68,9 +77,10 @@ export function buildMessages(to: Recipient, env: Envelope, now: number): object
     },
   ];
 
-  // Live Activities are only for clips, never for pairing or device updates.
-  if (to.la && (env.k === "text" || env.k === "blob")) {
-    // Live Activity push-to-start (iOS 17.2+). Field names per Firebase's Live Activity guide.
+  if (env.k === "blob" && (hint === "file" || hint === "image") && to.la) {
+    // Field names per Firebase's Live Activity guide. The widget shows the sender's name by
+    // looking `from` (a public-key fingerprint) up in its own store. Silent: the
+    // notification above already alerted.
     messages.push({
       token: to.fcm,
       apns: {
@@ -82,16 +92,15 @@ export function buildMessages(to: Recipient, env: Envelope, now: number): object
             event: "start",
             "content-state": { env: envString },
             "attributes-type": "ClipActivityAttributes",
-            attributes: { kind: env.k },
-            alert: { title: "Teleport", body: "New clip — tap Copy" },
-            "stale-date": expiry,
-            "dismissal-date": expiry,
+            attributes: { kind: hint, from: env.from },
+            alert: { title: "Teleport", body: hint === "file" ? "Downloading a file" : "Downloading a photo" },
+            "stale-date": now + 3600,
+            "dismissal-date": now + 3600,
           },
         },
       },
     });
   }
-
   return messages;
 }
 

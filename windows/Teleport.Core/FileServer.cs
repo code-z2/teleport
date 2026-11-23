@@ -9,7 +9,14 @@ namespace Teleport.Core;
 /// download, upload and thumbnail inside the home folder (SPEC.md "File sessions").
 public sealed class FileServer
 {
-    public sealed record Options(string Home, bool ShowHidden, bool WindowsRules = true);
+    /// `Drives`: extra roots shown at the top of the home listing, by name ("Kingston (D)" →
+    /// "D:\\"). Each is fully browsable and, like home, nothing resolves outside it.
+    ///
+    /// `Folders`: home folders Windows keeps somewhere else ("Pictures" → OneDrive\\Pictures when
+    /// OneDrive backs them up). Listed under their usual names in place of the stale local
+    /// copy, like File Explorer does.
+    public sealed record Options(string Home, bool ShowHidden, bool WindowsRules = true,
+        IReadOnlyDictionary<string, string>? Drives = null, IReadOnlyDictionary<string, string>? Folders = null);
 
     /// Renders a JPEG thumbnail (longest side px) or returns null. Supplied by the app.
     public Func<string, int, Task<byte[]?>>? Thumbnailer { get; init; }
@@ -120,6 +127,7 @@ public sealed class FileServer
                     case "list": List(c); break;
                     case "download": StartDownload(c); break;
                     case "thumbnail": _ = SendThumbnailAsync(c); break;
+                    case "read": ReadRange(c); break;
                     case "upload": StartUpload(c); break;
                     case "done": FinishUpload(c); break;
                     case "ack":
@@ -158,20 +166,43 @@ public sealed class FileServer
         return current;
     }
 
-    private bool InHome(string real)
+    private StringComparison Cmp => _options.WindowsRules ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    private bool Inside(string real, string root)
     {
-        var cmp = _options.WindowsRules ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         var p = Path.TrimEndingDirectorySeparator(real);
-        return p.Equals(_home, cmp) || p.StartsWith(_home + Path.DirectorySeparatorChar, cmp);
+        var r = Path.TrimEndingDirectorySeparator(root);
+        // A drive root ("D:\\") trims to "D:" and its children start "D:\\…".
+        return p.Equals(r, Cmp) || p.StartsWith(r + Path.DirectorySeparatorChar, Cmp);
     }
 
-    /// A home-relative path from a phone → a real path inside home.
+    private bool InHome(string real) => Inside(real, _home);
+
+    /// Home or any shared drive (for links found while listing).
+    private bool InAllowed(string real) =>
+        InHome(real) || Places.Any(p => Inside(real, p.Value));
+
+    private IEnumerable<KeyValuePair<string, string>> Places =>
+        (_options.Drives ?? new Dictionary<string, string>()).Concat(_options.Folders ?? new Dictionary<string, string>());
+
+    /// The drive or relocated folder a path's first component names, if any.
+    private (string Root, string Remainder)? DrivePath(string clean)
+    {
+        if (clean.Length == 0) return null;
+        var first = clean.Split('/')[0];
+        foreach (var (name, root) in Places)
+            if (name.Equals(first, Cmp)) return (root, clean.Length > first.Length ? clean[(first.Length + 1)..] : "");
+        return null;
+    }
+
+    /// A path from a phone → a real path inside home, or inside one of the shared drives.
     private string ResolveRelative(string relative)
     {
         var clean = FilePaths.Check(relative, _options.ShowHidden, _options.WindowsRules) ?? throw new PathException("bad_path");
-        var joined = clean.Length == 0 ? _home : Path.Combine(_home, clean.Replace('/', Path.DirectorySeparatorChar));
+        var (root, rest) = DrivePath(clean) ?? (_home, clean);
+        var joined = rest.Length == 0 ? root : Path.Combine(root, rest.Replace('/', Path.DirectorySeparatorChar));
         var real = Resolve(joined);
-        if (!InHome(real)) throw new PathException("denied");
+        if (!Inside(real, root)) throw new PathException("denied");
         return real;
     }
 
@@ -180,7 +211,7 @@ public sealed class FileServer
         switch (e)
         {
             case PathException { Code: "bad_path" }: Fail(id, "bad_path", "That location isn't allowed."); break;
-            case PathException: Fail(id, "denied", "That's outside your home folder."); break;
+            case PathException: Fail(id, "denied", "That's outside the folders this computer shares."); break;
             case FileNotFoundException or DirectoryNotFoundException: Fail(id, "not_found", "That item no longer exists."); break;
             case UnauthorizedAccessException: Fail(id, "denied", "Windows didn't allow Teleport to open that."); break;
             default: Fail(id, "io", e.Message); break;
@@ -216,7 +247,7 @@ public sealed class FileServer
                     if (item.LinkTarget is not null)
                     {
                         var resolved = item.ResolveLinkTarget(returnFinalTarget: true);
-                        if (resolved is null || !resolved.Exists || !InHome(Path.GetFullPath(resolved.FullName))) continue;  // links out of home aren't shown
+                        if (resolved is null || !resolved.Exists || !InAllowed(Path.GetFullPath(resolved.FullName))) continue;  // links out of shared places aren't shown
                         target = resolved;
                     }
                     var isDir = target is DirectoryInfo;
@@ -226,6 +257,25 @@ public sealed class FileServer
                 catch (IOException) { } catch (UnauthorizedAccessException) { }
             }
             entries.Sort((a, b) => a.Dir != b.Dir ? (a.Dir ? -1 : 1) : NaturalCompare(a.Name, b.Name));
+            if (path.Trim('/').Length == 0)
+            {
+                // Relocated home folders under their usual names, replacing the stale local copies.
+                if (_options.Folders is { Count: > 0 } folders)
+                {
+                    entries.RemoveAll(e => folders.ContainsKey(e.Name));
+                    entries.AddRange(folders.Where(f => Directory.Exists(f.Value))
+                        .Select(f => new FileEntry(f.Key, true, 0, new DateTimeOffset(Directory.GetLastWriteTimeUtc(f.Value)).ToUnixTimeSeconds())));
+                    entries.Sort((a, b) => a.Dir != b.Dir ? (a.Dir ? -1 : 1) : NaturalCompare(a.Name, b.Name));
+                }
+                // Then the shared drives first ("Kingston (D)"…).
+                if (_options.Drives is { Count: > 0 } drives)
+                {
+                    var roots = drives.Where(d => Directory.Exists(d.Value)).OrderBy(d => d.Key, StringComparer.OrdinalIgnoreCase)
+                        .Select(d => new FileEntry(d.Key, true, 0, new DateTimeOffset(Directory.GetLastWriteTimeUtc(d.Value)).ToUnixTimeSeconds()));
+                    entries.RemoveAll(e => drives.ContainsKey(e.Name));
+                    entries.InsertRange(0, roots);
+                }
+            }
             Send(new SessionFrame.Ctl(new Control("entries", c.Id) { Path = path, Entries = entries }));
         }
         catch (Exception e) { PathError(c.Id, e); }
@@ -312,6 +362,30 @@ public sealed class FileServer
         catch (OperationCanceledException) { }
         catch (Exception e) { PathError(id, e); }
         finally { _downloads.TryRemove(id, out _); }
+    }
+
+    // ---------- read (byte ranges, for streaming video) ----------
+
+    /// `read { path, offset, size }`: up to 2 MiB from `offset`, then `done`.
+    private void ReadRange(Control c)
+    {
+        try
+        {
+            var file = ResolveRelative(c.Path ?? "");
+            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            stream.Seek(Math.Max(0, c.Offset ?? 0), SeekOrigin.Begin);
+            var left = (int)Math.Min(Math.Max(0, c.Size ?? 0), SessionCrypto.MaxRead);
+            var buffer = new byte[SessionCrypto.ChunkSize];
+            while (left > 0)
+            {
+                var n = stream.Read(buffer, 0, Math.Min(left, buffer.Length));
+                if (n == 0) break;
+                Send(new SessionFrame.Data(c.Id, buffer[..n]));
+                left -= n;
+            }
+            Send(new SessionFrame.Ctl(new Control("done", c.Id)));
+        }
+        catch (Exception e) { PathError(c.Id, e); }
     }
 
     // ---------- thumbnail ----------

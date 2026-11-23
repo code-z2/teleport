@@ -184,12 +184,12 @@ public class FileServerTests : IDisposable
         try { Directory.Delete(_home, recursive: true); } catch { }
     }
 
-    private async Task<Phone> ConnectAsync(bool trusted = true, bool showHidden = false)
+    private async Task<Phone> ConnectAsync(bool trusted = true, bool showHidden = false, IReadOnlyDictionary<string, string>? drives = null)
     {
         MemPipe phoneEnd = new(), pcEnd = new();
         phoneEnd.Peer = pcEnd; pcEnd.Peer = phoneEnd;
         var phonePeer = new Peer("Phone", "ios", B64.Url(new SoftwareAgreementKey().PublicKey), B64.Url(_phoneKs.PublicKey));
-        var server = new FileServer(pcEnd, _pcKs, Mailbox, new FileServer.Options(_home, showHidden),
+        var server = new FileServer(pcEnd, _pcKs, Mailbox, new FileServer.Options(_home, showHidden, Drives: drives),
             id => trusted && id == phonePeer.Id ? phonePeer : null);
         _ = Task.Run(() => server.RunAsync());
         return await Phone.ConnectAsync(phoneEnd, _phoneKs, Mailbox, _pcKs.PublicKey);
@@ -267,5 +267,62 @@ public class FileServerTests : IDisposable
         }
         catch (UnauthorizedAccessException) { /* creating symlinks needs Developer Mode or admin */ }
         finally { Directory.Delete(outside, true); }
+    }
+
+    [Fact]
+    public async Task SharedDrivesAreListedBrowsableAndBounded()
+    {
+        var drive = Path.Combine(Path.GetTempPath(), "teleport-drive-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(drive, "Movies"));
+        File.WriteAllText(Path.Combine(drive, "Movies", "clip.mp4"), "video");
+        var hidden = Path.Combine(drive, "System Volume Information");
+        Directory.CreateDirectory(hidden);
+        File.SetAttributes(hidden, FileAttributes.Hidden | FileAttributes.System | FileAttributes.Directory);
+        try
+        {
+            var phone = await ConnectAsync(drives: new Dictionary<string, string> { ["Kingston (D)"] = drive });
+            var top = await phone.RequestAsync(new Control("list", phone.NewId()) { Path = "" });
+            Assert.Equal("Kingston (D)", top.Entries![0].Name);  // drives first
+            var root = await phone.RequestAsync(new Control("list", phone.NewId()) { Path = "Kingston (D)" });
+            Assert.Equal(["Movies"], root.Entries!.Select(e => e.Name));  // system folder hidden
+            Assert.Equal("video"u8.ToArray(), await phone.DownloadAsync("Kingston (D)/Movies/clip.mp4"));
+            Assert.Equal("up.txt", await phone.UploadAsync("hi"u8.ToArray(), "Kingston (D)/Movies", "up.txt"));
+            Assert.True(File.Exists(Path.Combine(drive, "Movies", "up.txt")));
+            // Can't climb out of the drive.
+            Assert.Equal("bad_path", (await phone.RequestAsync(new Control("list", phone.NewId()) { Path = "Kingston (D)/.." })).Code);
+            // Unknown drive names are just (missing) home folders.
+            Assert.Equal("not_found", (await phone.RequestAsync(new Control("list", phone.NewId()) { Path = "Nope (Z)" })).Code);
+        }
+        finally { Directory.Delete(drive, true); }
+    }
+
+    /// Diagnostic, run by hand on a real PC: TELEPORT_PROBE=1 dotnet test --filter RealHomeProbe.
+    /// Lists real folders through the real server and writes what a phone would see.
+    [Fact]
+    public async Task RealHomeProbe()
+    {
+        if (Environment.GetEnvironmentVariable("TELEPORT_PROBE") != "1") return;
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var drives = DriveInfo.GetDrives().Where(d => d.IsReady && d.DriveType is DriveType.Fixed or DriveType.Removable && !d.Name.StartsWith("C", StringComparison.OrdinalIgnoreCase))
+            .ToDictionary(d => $"{(string.IsNullOrEmpty(d.VolumeLabel) ? "Local Disk" : d.VolumeLabel)} ({d.Name[0]})", d => d.RootDirectory.FullName);
+        MemPipe phoneEnd = new(), pcEnd = new();
+        phoneEnd.Peer = pcEnd; pcEnd.Peer = phoneEnd;
+        var phonePeer = new Peer("Phone", "ios", B64.Url(new SoftwareAgreementKey().PublicKey), B64.Url(_phoneKs.PublicKey));
+        var folders = new[] { ("Desktop", Environment.SpecialFolder.DesktopDirectory), ("Documents", Environment.SpecialFolder.MyDocuments), ("Pictures", Environment.SpecialFolder.MyPictures) }
+            .Select(f => (f.Item1, Environment.GetFolderPath(f.Item2))).Where(f => !f.Item2.Equals(Path.Combine(home, f.Item1), StringComparison.OrdinalIgnoreCase))
+            .ToDictionary(f => f.Item1, f => f.Item2);
+        var server = new FileServer(pcEnd, _pcKs, Mailbox, new FileServer.Options(home, false, Drives: drives, Folders: folders), id => phonePeer);
+        _ = Task.Run(() => server.RunAsync());
+        var phone = await Phone.ConnectAsync(phoneEnd, _phoneKs, Mailbox, _pcKs.PublicKey);
+        var report = new System.Text.StringBuilder();
+        foreach (var path in new[] { "", "Pictures", "Documents", "Desktop", drives.Keys.FirstOrDefault() ?? "" })
+        {
+            var r = await phone.RequestAsync(new Control("list", phone.NewId()) { Path = path });
+            var bytes = System.Text.Encoding.UTF8.GetByteCount(Wire.Serialize(r));
+            report.AppendLine($"== '{path}': op={r.Op} code={r.Code} msg={r.Message} entries={r.Entries?.Count} jsonBytes={bytes}");
+            foreach (var e in (r.Entries ?? []).Take(path.Length == 0 ? 40 : 6))
+                report.AppendLine($"   {(e.Dir ? "D" : "F")} {e.Name}  {DateTimeOffset.FromUnixTimeSeconds(e.Mtime):yyyy-MM-dd}  {e.Size}");
+        }
+        File.WriteAllText(Path.Combine(Path.GetTempPath(), "teleport-probe.txt"), report.ToString());
     }
 }
