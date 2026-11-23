@@ -64,6 +64,7 @@ import app.teleport.core.FileEntry
 import app.teleport.core.FileSessionClient
 import app.teleport.core.Peer
 import app.teleport.core.SessionException
+import app.teleport.core.SocketPipe
 import app.teleport.core.Teleport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -140,12 +141,35 @@ class MacBrowserActivity : ComponentActivity() {
                 throw SessionException("offline", "${mac.name} is offline. Check it's awake and connected.")
             }
             val pipe = OkHttpSessionPipe.open(teleport.relay.sessionUrl(mailbox), teleport.relay.authorization)
-            try {
+            val relayed = try {
                 FileSessionClient.handshake(pipe, teleport.signing, mailbox, mac.ksBytes)
             } catch (e: Exception) {
                 pipe.close(); throw e
             }
+            // Same Wi-Fi? Move to a direct connection (as fast as the network, not the home
+            // internet's upload). The addresses come over the encrypted session.
+            val direct = runCatching { SocketPipe.upgrade(relayed.endpoints(), teleport.signing, mailbox, mac.ksBytes) }.getOrNull()
+            if (direct != null) { relayed.close(); direct } else relayed
         }.also { client = it }
+    }
+
+    /**
+     * One block for a playing video. A connection that stalls without closing (Wi-Fi dropped,
+     * the computer slept) would hang playback for good, so each read gets 20 s. After that, or
+     * any failure, the session is dropped and the player's retry connects afresh.
+     */
+    private fun streamRead(path: String, offset: Long, length: Int, cancelled: () -> Boolean): ByteArray {
+        val c = kotlinx.coroutines.runBlocking { session() }
+        val deadline = android.os.SystemClock.elapsedRealtime() + 20_000
+        try {
+            return c.read(path, offset, length) { cancelled() || android.os.SystemClock.elapsedRealtime() > deadline }
+        } catch (e: Exception) {
+            if (!cancelled()) {
+                android.util.Log.w("Teleport", "stream read at $offset failed; reconnecting", e)
+                c.close()
+            }
+            throw e
+        }
     }
 
     /** Runs [op] on the session, reconnecting once if the old one had closed. */
@@ -408,7 +432,7 @@ class MacBrowserActivity : ComponentActivity() {
                 // Called on the player's own threads (never the main thread); `cancelled` lets a
                 // closing player abandon a read at once instead of waiting for the network.
                 stream = { offset, length, cancelled ->
-                    kotlinx.coroutines.runBlocking { withSession { it.read(state.path, offset, length, cancelled) } }
+                    streamRead(state.path, offset, length, cancelled)
                 })
         }
     }

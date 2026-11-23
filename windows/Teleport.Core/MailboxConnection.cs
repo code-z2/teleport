@@ -41,7 +41,46 @@ public sealed class MailboxConnection : IAsyncDisposable
         _fileOptions = fileOptions;
     }
 
-    public void Start() => _loop ??= Task.Run(RunAsync);
+    private LocalListener? _local;
+
+    public void Start()
+    {
+        StartLocal();
+        _loop ??= Task.Run(RunAsync);
+    }
+
+    /// Phones on the same network connect straight here (as fast as the Wi-Fi), after learning
+    /// the addresses over a relay session. Same handshake and encryption.
+    private void StartLocal()
+    {
+        if (_local is not null) return;
+        try
+        {
+            _local = new LocalListener(pipe =>
+            {
+                var key = "local-" + Guid.NewGuid().ToString("N");
+                var server = new FileServer(pipe, _teleport.Signing, _teleport.MyId, Options(),
+                    id => _teleport.Store.Peers.GetValueOrDefault(id)) { Thumbnailer = Thumbnailer };
+                Log?.Invoke("direct file session opened");
+                _ = Task.Run(async () =>
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        for (var i = 0; i < 50 && server.Phone is null; i++) await Task.Delay(200);
+                        if (server.Phone is { } phone) ReportBrowsers(key, phone.Name);
+                    });
+                    await server.RunAsync();
+                    ReportBrowsers(key, null);
+                    Log?.Invoke("direct file session closed");
+                });
+            });
+            _local.Start();
+            Log?.Invoke($"direct sessions on port {_local.Port}");
+        }
+        catch (Exception e) { Log?.Invoke($"couldn't listen for direct sessions: {e.Message}"); }
+    }
+
+    private FileServer.Options Options() => _fileOptions() with { Endpoints = _local?.Endpoints() };
 
     /// After wake or a network change: skip the backoff and reconnect now.
     public void ReconnectNow() => _kick?.Cancel();
@@ -189,7 +228,7 @@ public sealed class MailboxConnection : IAsyncDisposable
     {
         var pipe = new MailboxSessionPipe(this, sid, raw);
         _sessions[sid] = pipe;
-        var server = new FileServer(pipe, _teleport.Signing, _teleport.MyId, _fileOptions(),
+        var server = new FileServer(pipe, _teleport.Signing, _teleport.MyId, Options(),
             id => _teleport.Store.Peers.GetValueOrDefault(id)) { Thumbnailer = Thumbnailer };
         Log?.Invoke("file session opened");
         _ = Task.Run(async () =>

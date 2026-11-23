@@ -16,7 +16,8 @@ public sealed class FileServer
     /// OneDrive backs them up). Listed under their usual names in place of the stale local
     /// copy, like File Explorer does.
     public sealed record Options(string Home, bool ShowHidden, bool WindowsRules = true,
-        IReadOnlyDictionary<string, string>? Drives = null, IReadOnlyDictionary<string, string>? Folders = null);
+        IReadOnlyDictionary<string, string>? Drives = null, IReadOnlyDictionary<string, string>? Folders = null,
+        IReadOnlyList<string>? Endpoints = null);
 
     /// Renders a JPEG thumbnail (longest side px) or returns null. Supplied by the app.
     public Func<string, int, Task<byte[]?>>? Thumbnailer { get; init; }
@@ -128,6 +129,10 @@ public sealed class FileServer
                     case "download": StartDownload(c); break;
                     case "thumbnail": _ = SendThumbnailAsync(c); break;
                     case "read": ReadRange(c); break;
+                    case "endpoints":
+                        // Over the encrypted session, so the phone can trust these addresses.
+                        Send(new SessionFrame.Ctl(new Control("endpoints", c.Id) { Hosts = [.. _options.Endpoints ?? []] }));
+                        break;
                     case "upload": StartUpload(c); break;
                     case "done": FinishUpload(c); break;
                     case "ack":

@@ -149,7 +149,13 @@ async function handleUpload(req: Request, env: Env, url: URL): Promise<Response>
       list.push({ partNumber: p.part, etag: p.etag });
     }
     let obj: R2Object;
-    try { obj = await upload.complete(list); } catch { return err(400, "upload failed"); }
+    try {
+      obj = await upload.complete(list);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.log(`complete ${id} (${list.length} parts) failed: ${reason}`);
+      return err(400, `upload failed: ${reason}`);
+    }
     if (obj.size > MAX_LARGE_BLOB_BYTES) {
       await env.BLOBS.delete(id);
       return err(413, "blob too large");
@@ -168,8 +174,11 @@ async function handleUpload(req: Request, env: Env, url: URL): Promise<Response>
   try {
     const uploaded = await upload.uploadPart(part, bytes);
     return json({ etag: uploaded.etag });
-  } catch {
-    return err(400, "unknown upload");
+  } catch (e) {
+    // Say what R2 said (no content is involved: this is about the upload itself).
+    const reason = e instanceof Error ? e.message : String(e);
+    console.log(`uploadPart ${id} part ${part} (${bytes.byteLength} bytes) failed: ${reason}`);
+    return err(400, `upload part failed: ${reason}`);
   }
 }
 

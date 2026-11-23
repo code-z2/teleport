@@ -69,6 +69,8 @@ data class Control(
     val bytes: Long? = null,
     /** `thumbnail`: longest side in pixels. */
     val px: Int? = null,
+    /** `endpoints`: "ip:port" addresses for a direct connection on the same network. */
+    val hosts: List<String>? = null,
     val entries: List<FileEntry>? = null,
     val code: String? = null,
     val message: String? = null,
@@ -347,6 +349,19 @@ class FileSessionClient private constructor(private val pipe: SessionPipe, priva
         }
     }
 
+    /** The computer's direct-connection addresses ("ip:port"), over this (trusted) session. */
+    fun endpoints(): List<String> {
+        val (id, q) = begin { Control("endpoints", it) }
+        try {
+            while (true) {
+                val f = next(q) { false }
+                if (f is SessionFrame.Ctl && f.c.op == "endpoints") return f.c.hosts.orEmpty()
+            }
+        } finally {
+            end(id, cancel = false)
+        }
+    }
+
     /**
      * Up to 2 MiB of [path] from [offset] (streaming: a player reads what it needs next).
      * [cancelled] is checked while waiting, so closing the player never blocks on the network.
@@ -401,5 +416,65 @@ class FileSessionClient private constructor(private val pipe: SessionPipe, priva
         } finally {
             end(id, cancel = !ok)
         }
+    }
+}
+
+/**
+ * Direct file sessions on the same network (SPEC.md "Direct connections"): one TCP
+ * connection, framed as u32 BE length ‖ payload. Same handshake and encryption as the relay.
+ */
+class SocketPipe private constructor(private val socket: java.net.Socket) : SessionPipe {
+    private val input = java.io.DataInputStream(java.io.BufferedInputStream(socket.getInputStream(), 1 shl 16))
+    private val output = java.io.DataOutputStream(java.io.BufferedOutputStream(socket.getOutputStream(), 1 shl 16))
+    @Volatile private var closed = false
+
+    companion object {
+        const val MAX_FRAME = 4 * 1024 * 1024
+
+        /** Connects within [timeoutMs], or throws. */
+        fun connect(host: String, port: Int, timeoutMs: Int = 1500): SocketPipe {
+            val socket = java.net.Socket()
+            socket.tcpNoDelay = true
+            socket.connect(java.net.InetSocketAddress(host, port), timeoutMs)
+            return SocketPipe(socket)
+        }
+
+        /** Tries [hosts] ("ip:port") in turn; the first that connects and completes a handshake. */
+        fun upgrade(hosts: List<String>, signer: SigningKey, mailbox: String, macKs: ByteArray): FileSessionClient? {
+            for (hp in hosts) {
+                val parts = hp.split(":")
+                val port = parts.getOrNull(1)?.toIntOrNull() ?: continue
+                val pipe = runCatching { connect(parts[0], port) }.getOrNull() ?: continue
+                try {
+                    return FileSessionClient.handshake(pipe, signer, mailbox, macKs)
+                } catch (e: Exception) {
+                    pipe.close()
+                }
+            }
+            return null
+        }
+    }
+
+    override fun send(data: ByteArray) {
+        if (closed) return
+        synchronized(output) {
+            runCatching { output.writeInt(data.size); output.write(data); output.flush() }.onFailure { close() }
+        }
+    }
+
+    override fun receive(): ByteArray? {
+        if (closed) return null
+        return try {
+            val length = input.readInt()
+            if (length < 0 || length > MAX_FRAME) { close(); return null }
+            ByteArray(length).also { input.readFully(it) }
+        } catch (e: java.io.IOException) {
+            close(); null
+        }
+    }
+
+    override fun close() {
+        closed = true
+        runCatching { socket.close() }
     }
 }

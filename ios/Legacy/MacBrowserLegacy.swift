@@ -40,6 +40,29 @@ final class MacConnectionLegacy: ObservableObject {
     }
 
     /// Runs `op`, reconnecting once if the old session had gone away.
+    /// One block for a playing video. A connection that stalls without closing (Wi-Fi
+    /// dropped, the computer slept) would hang playback for good, so each read gets 20 s;
+    /// past that the session is dropped and the player's retry starts a fresh one.
+    func streamRead(_ path: String, offset: Int64, length: Int) async throws -> Data {
+        let c = try await session()
+        do {
+            return try await withThrowingTaskGroup(of: Data.self) { group in
+                group.addTask { try await c.read(path, offset: offset, length: length) }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 20_000_000_000)
+                    await c.close()  // ends the stuck read, so the group can finish
+                    throw FileSessionError.closed
+                }
+                defer { group.cancelAll() }
+                return try await group.next()!
+            }
+        } catch FileSessionError.closed {
+            if client === c { client = nil }
+            await c.close()
+            throw FileSessionError.closed
+        }
+    }
+
     func run<T: Sendable>(_ op: @escaping (FileSessionClient) async throws -> T) async throws -> T {
         do {
             return try await op(try await session())
@@ -402,7 +425,7 @@ struct LegacyFilePreviewView: View {
         case .streaming:
             ZStack(alignment: .bottom) {
                 StreamingPlayer(name: entry.name, size: entry.size) { [connection, path] offset, length in
-                    try await connection.run { try await $0.read(path, offset: offset, length: length) }
+                    try await connection.streamRead(path, offset: offset, length: length)
                 }
                 .ignoresSafeArea(edges: .bottom)
                 if let saving {

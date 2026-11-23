@@ -129,8 +129,11 @@ public struct RelayClient: Sendable {
         return try JSONDecoder().decode(Upload.self, from: data)
     }
 
-    private func uploadPath(_ u: Upload) -> String {
-        "v1/blob/upload/\(u.id)/\(u.upload.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? u.upload)"
+    /// R2 upload ids are URL-safe (letters, digits, - and _). Not percent-encoded here:
+    /// building the request URL encodes the path itself, and encoding twice sent the relay a
+    /// mangled id ("the specified multipart upload does not exist").
+    func uploadPath(_ u: Upload) -> String {
+        "v1/blob/upload/\(u.id)/\(u.upload)"
     }
 
     /// Uploads one part (1-based); returns its etag.

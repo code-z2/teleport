@@ -133,6 +133,8 @@ public struct Control: Codable, Sendable {
     public var bytes: Int64?
     /// `thumbnail`: longest side in pixels.
     public var px: Int?
+    /// `endpoints`: "ip:port" addresses for a direct connection on the same network.
+    public var hosts: [String]?
     public var entries: [FileEntry]?
     public var code: String?
     public var message: String?

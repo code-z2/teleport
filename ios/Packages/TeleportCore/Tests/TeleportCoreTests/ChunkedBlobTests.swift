@@ -55,3 +55,11 @@ private func b(_ s: String) -> Data { Data(base64URL: s)! }
     let json = String(decoding: try JSONEncoder().encode(big), as: UTF8.self)
     #expect(json.contains(#""c":4194304"#) && json.contains("Clip.mp4"))
 }
+
+@Test func uploadURLKeepsTheUploadIDIntact() {
+    let config = TeleportConfig(relayURL: URL(string: "https://relay.test")!, relayKey: "k", appGroup: "g", keychainGroup: nil)
+    let relay = RelayClient(config: config)
+    let upload = RelayClient.Upload(id: "hSiXKYWuM-_40HPJ_gF_Bw", upload: "ADZnPx-xJRn3_e20Y2DoLQ")
+    let url = relay.request(relay.uploadPath(upload) + "/1", method: "PUT").url!.absoluteString
+    #expect(url == "https://relay.test/v1/blob/upload/hSiXKYWuM-_40HPJ_gF_Bw/ADZnPx-xJRn3_e20Y2DoLQ/1")
+}

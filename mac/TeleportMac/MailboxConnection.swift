@@ -33,6 +33,10 @@ final class MailboxConnection {
 
     /// Open file sessions, by raw 16-byte sid.
     private var sessions: [Data: SessionEntry] = [:]
+    /// Direct (same-network) sessions: phone names, by session.
+    private var localSessions: [UUID: String?] = [:]
+    private var localListener: LocalListener?
+    private var localPort: UInt16?
     private struct SessionEntry { let pipe: MailboxSessionPipe; var phone: String? }
     /// Sessions with no traffic for this long are closed, so a phone that vanished without
     /// hanging up can't stay "browsing". The phone reconnects by itself on its next action.
@@ -72,6 +76,7 @@ final class MailboxConnection {
             }
         }
         pathMonitor.start(queue: .main)
+        startLocalListener()
         connect()
     }
 
@@ -198,7 +203,7 @@ final class MailboxConnection {
         let teleport = teleport
         let server = FileServer(
             pipe: pipe, signer: teleport.keys.signing, mailbox: teleport.myID,
-            options: .init(home: FileManager.default.homeDirectoryForCurrentUser, showHidden: showHiddenFiles()),
+            options: fileOptions(),
             phones: { teleport.store.peers[$0] })
         log.notice("file session opened")
         Task { [weak self] in
@@ -223,6 +228,58 @@ final class MailboxConnection {
         }
     }
 
+    // MARK: Direct sessions (same network)
+
+    private func fileOptions() -> FileServer.Options {
+        .init(home: FileManager.default.homeDirectoryForCurrentUser, showHidden: showHiddenFiles(),
+              endpoints: localPort.map { LocalListener.endpoints(port: $0) } ?? [])
+    }
+
+    /// Phones on the same network connect straight to this Mac (as fast as the Wi-Fi), after
+    /// learning its addresses over a relay session. Same handshake and encryption.
+    private func startLocalListener() {
+        let teleport = teleport
+        do {
+            let listener = try LocalListener { [weak self] pipe in
+                Task { @MainActor [weak self] in self?.runLocalSession(pipe, teleport: teleport) }
+            }
+            localListener = listener
+            Task { [weak self] in
+                let port = try? await listener.start()
+                await MainActor.run { self?.localPort = port }
+                log.notice("direct sessions on port \(port ?? 0, privacy: .public)")
+            }
+        } catch {
+            log.error("couldn't listen for direct sessions: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func runLocalSession(_ pipe: TCPPipe, teleport: Teleport) {
+        let key = UUID()
+        localSessions[key] = .some(nil)
+        let server = FileServer(pipe: pipe, signer: teleport.keys.signing, mailbox: teleport.myID,
+                                options: fileOptions(), phones: { teleport.store.peers[$0] })
+        log.notice("direct file session opened")
+        Task { [weak self] in
+            Task { @MainActor [weak self] in
+                for _ in 0..<50 {
+                    if let phone = await server.phone {
+                        self?.localSessions[key] = phone.name
+                        self?.reportBrowsers()
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
+            }
+            await server.run()
+            await MainActor.run {
+                self?.localSessions[key] = nil
+                self?.reportBrowsers()
+                log.notice("direct file session closed")
+            }
+        }
+    }
+
     private func endSessions() {
         for entry in sessions.values { entry.pipe.finish() }
         sessions = [:]
@@ -230,7 +287,8 @@ final class MailboxConnection {
     }
 
     private func reportBrowsers() {
-        onBrowsers(Array(Set(sessions.values.compactMap(\.phone))).sorted())
+        let names = sessions.values.compactMap(\.phone) + localSessions.values.compactMap { $0 }
+        onBrowsers(Array(Set(names)).sorted())
     }
 
     private func send(_ object: [String: Any]) {

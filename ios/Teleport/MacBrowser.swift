@@ -44,6 +44,29 @@ final class MacConnection {
         }
     }
 
+    /// One block for a playing video. A connection that stalls without closing (Wi-Fi
+    /// dropped, the computer slept) would hang playback for good, so each read gets 20 s;
+    /// past that the session is dropped and the player's retry starts a fresh one.
+    func streamRead(_ path: String, offset: Int64, length: Int) async throws -> Data {
+        let c = try await session()
+        do {
+            return try await withThrowingTaskGroup(of: Data.self) { group in
+                group.addTask { try await c.read(path, offset: offset, length: length) }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 20_000_000_000)
+                    await c.close()  // ends the stuck read, so the group can finish
+                    throw FileSessionError.closed
+                }
+                defer { group.cancelAll() }
+                return try await group.next()!
+            }
+        } catch FileSessionError.closed {
+            if client === c { client = nil }
+            await c.close()
+            throw FileSessionError.closed
+        }
+    }
+
     /// Ends the session (the Mac stops showing this phone as browsing). The next
     /// operation reconnects on its own.
     func close() {

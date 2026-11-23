@@ -144,9 +144,11 @@ final class StreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked Se
                     failures = 0
                 } catch is CancellationError {
                     return
-                } catch where ResumingDownload.isTransient(error) && failures < 3 {
-                    failures += 1  // the computer dropped off for a moment: the session reconnects
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                } catch where ResumingDownload.isTransient(error) && failures < 8 {
+                    // The computer dropped off for a moment: the session reconnects. Keep
+                    // trying for a while (the player shows it's buffering) before giving up.
+                    failures += 1
+                    try? await Task.sleep(nanoseconds: UInt64(min(failures, 4)) * 500_000_000)
                 } catch {
                     queue.async { if !box.request.isCancelled { box.request.finishLoading(with: error) } }
                     return

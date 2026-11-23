@@ -80,7 +80,7 @@ stop)
 run)
     "$0" stop >/dev/null
     "$0" build
-    ps_interactive "Start-Process '$APP_EXE'"
+    ps_interactive "Start-Process '$APP_EXE' -ArgumentList '--background'"
     sleep 2
     ps "Get-Process Teleport -ErrorAction SilentlyContinue | Select-Object Id, StartTime, @{n='MB';e={[int](\$_.WorkingSet64/1MB)}} | Format-Table -AutoSize | Out-String"
     ;;

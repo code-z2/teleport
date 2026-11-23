@@ -13,16 +13,65 @@ public actor FileSessionClient {
     private var reader: Task<Void, Never>?
 
     /// Opens a session to `mac` through its relay mailbox.
-    public static func connect(teleport: Teleport, to mac: Peer) async throws -> FileSessionClient {
+    /// Opens a session to `mac`: through its relay mailbox, then, if the computer is on the
+    /// same network, moves to a direct connection (SPEC.md "Direct connections"), which is
+    /// as fast as the Wi-Fi instead of the home internet's upload speed.
+    public static func connect(teleport: Teleport, to mac: Peer, direct: Bool = true) async throws -> FileSessionClient {
         guard mac.platform.hasMailbox, let mailbox = mac.mailbox else { throw FileSessionError.protocolError }
         if await teleport.relay.isOnline(mailbox: mailbox) == false { throw FileSessionError.offline }
         let pipe = WebSocketPipe(teleport.relay.request("v1/mailbox/\(mailbox)/session", method: "GET"))
+        let relayed: FileSessionClient
         do {
-            return try await handshake(pipe: pipe, signer: teleport.keys.signing, mailbox: mailbox, macKs: mac.ks)
+            relayed = try await handshake(pipe: pipe, signer: teleport.keys.signing, mailbox: mailbox, macKs: mac.ks)
         } catch {
             pipe.close()
             throw error
         }
+        guard direct, let local = await relayed.upgrade(signer: teleport.keys.signing, mailbox: mailbox, macKs: mac.ks) else {
+            return relayed
+        }
+        await relayed.close()
+        return local
+    }
+
+    /// True for a direct (same-network) session.
+    public private(set) var isDirect = false
+
+    /// Asks the computer for its local addresses (over this session, so they're authentic)
+    /// and tries each briefly. A new session with its own handshake, or nil.
+    func upgrade(signer: any SigningKey, mailbox: String, macKs: Data) async -> FileSessionClient? {
+        guard let hosts = try? await endpoints(), !hosts.isEmpty else { return nil }
+        for hostPort in hosts {
+            let parts = hostPort.split(separator: ":")
+            guard parts.count == 2, let port = UInt16(parts[1]) else { continue }
+            do {
+                let pipe = try await TCPPipe.connect(host: String(parts[0]), port: port)
+                do {
+                    let client = try await Self.handshake(pipe: pipe, signer: signer, mailbox: mailbox, macKs: macKs)
+                    await client.markDirect()
+                    return client
+                } catch {
+                    pipe.close()
+                }
+            } catch {
+                continue
+            }
+        }
+        return nil
+    }
+
+    private func markDirect() { isDirect = true }
+
+    /// The computer's direct-connection addresses ("ip:port").
+    public func endpoints() async throws -> [String] {
+        let (id, stream) = try begin { Control("endpoints", id: $0) }
+        defer { end(id) }
+        for try await frame in stream {
+            guard case .control(let c) = frame else { continue }
+            try Self.check(c)
+            if c.op == "endpoints" { return c.hosts ?? [] }
+        }
+        throw failure ?? FileSessionError.closed
     }
 
     /// The handshake over any pipe (tests use an in-memory one).

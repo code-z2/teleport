@@ -64,7 +64,7 @@ struct FilePreviewView: View {
         case .streaming:
             ZStack(alignment: .bottom) {
                 StreamingPlayer(name: entry.name, size: entry.size) { [connection, path] offset, length in
-                    try await connection.run { try await $0.read(path, offset: offset, length: length) }
+                    try await connection.streamRead(path, offset: offset, length: length)
                 }
                 .ignoresSafeArea(edges: .bottom)
                 if let saving {

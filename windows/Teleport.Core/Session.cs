@@ -67,6 +67,8 @@ public sealed record Control(string Op, uint Id)
     public string? Dir { get; init; }
     public long? Bytes { get; init; }
     public int? Px { get; init; }
+    /// `endpoints`: "ip:port" addresses for a direct connection on the same network.
+    public List<string>? Hosts { get; init; }
     public List<FileEntry>? Entries { get; init; }
     public string? Code { get; init; }
     public string? Message { get; init; }

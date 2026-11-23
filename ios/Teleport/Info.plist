@@ -26,6 +26,8 @@
 	<string>public.app-category.productivity</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Scan the pairing code shown on your other phone.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Teleport connects straight to your Mac or PC when they're on the same Wi-Fi, so files and videos load much faster.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Save images you receive from your other phone to Photos.</string>
 	<key>NSSupportsLiveActivities</key>

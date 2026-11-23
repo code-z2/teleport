@@ -292,3 +292,49 @@ private final class Counter: @unchecked Sendable {
     #expect(try Data(contentsOf: dest) == big)
     await second.close()
 }
+
+@Test func directSessionOverLocalTCP() async throws {
+    let f = try Fixture()
+    let phone = f.peer(f.phoneKeys, platform: .ios)
+    let phoneID = TeleportCrypto.fingerprint(f.phoneKeys.publicKey)
+    let listener = try LocalListener { pipe in
+        let server = FileServer(pipe: pipe, signer: f.macKeys, mailbox: f.mailbox,
+                                options: .init(home: f.home, showHidden: false), phones: { $0 == phoneID ? phone : nil })
+        Task { await server.run() }
+    }
+    let port = try await listener.start()
+    defer { listener.stop() }
+
+    // A relayed session (in memory) that advertises the listener; the client moves to it.
+    let (phoneEnd, macEnd) = MemoryPipe.pair()
+    let relayServer = FileServer(pipe: macEnd, signer: f.macKeys, mailbox: f.mailbox,
+                                 options: .init(home: f.home, showHidden: false, endpoints: ["127.0.0.1:\(port)"]),
+                                 phones: { $0 == phoneID ? phone : nil })
+    Task { await relayServer.run() }
+    let relayed = try await FileSessionClient.handshake(pipe: phoneEnd, signer: f.phoneKeys, mailbox: f.mailbox, macKs: f.macKeys.publicKey)
+    #expect(try await relayed.endpoints() == ["127.0.0.1:\(port)"])
+    let direct = try #require(await relayed.upgrade(signer: f.phoneKeys, mailbox: f.mailbox, macKs: f.macKeys.publicKey))
+    #expect(await direct.isDirect)
+    #expect(try await direct.list("Documents").map(\.name) == ["Notes", "a.txt"])
+    // A big download over TCP, with framing and flow control.
+    let big = Data((0..<(3 * 1024 * 1024 + 5)).map { UInt8(truncatingIfNeeded: $0 &* 3) })
+    try big.write(to: f.home.appending(path: "Documents/big.bin"))
+    let out = FileManager.default.temporaryDirectory.appending(path: "direct-\(UUID().uuidString).bin")
+    try await direct.download("Documents/big.bin", to: out)
+    #expect(try Data(contentsOf: out) == big)
+    await direct.close()
+    await relayed.close()
+}
+
+@Test func unreachableEndpointsStayOnTheRelay() async throws {
+    let f = try Fixture()
+    let (phoneEnd, macEnd) = MemoryPipe.pair()
+    let phone = f.peer(f.phoneKeys, platform: .ios)
+    let server = FileServer(pipe: macEnd, signer: f.macKeys, mailbox: f.mailbox,
+                            options: .init(home: f.home, showHidden: false, endpoints: ["127.0.0.1:1"]), phones: { _ in phone })
+    Task { await server.run() }
+    let relayed = try await FileSessionClient.handshake(pipe: phoneEnd, signer: f.phoneKeys, mailbox: f.mailbox, macKs: f.macKeys.publicKey)
+    #expect(await relayed.upgrade(signer: f.phoneKeys, mailbox: f.mailbox, macKs: f.macKeys.publicKey) == nil)
+    #expect(try await relayed.list("").map(\.name) == ["Documents"])  // still works
+    await relayed.close()
+}

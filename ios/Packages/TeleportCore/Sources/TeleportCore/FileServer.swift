@@ -12,7 +12,11 @@ public actor FileServer {
     public struct Options: Sendable {
         public var home: URL
         public var showHidden: Bool
-        public init(home: URL, showHidden: Bool) { self.home = home; self.showHidden = showHidden }
+        /// "ip:port" addresses where this computer accepts direct sessions (empty: none).
+        public var endpoints: [String]
+        public init(home: URL, showHidden: Bool, endpoints: [String] = []) {
+            self.home = home; self.showHidden = showHidden; self.endpoints = endpoints
+        }
     }
 
     private let pipe: any SessionPipe
@@ -122,6 +126,11 @@ public actor FileServer {
             case "download": startDownload(c)
             case "thumbnail": startThumbnail(c)
             case "read": readRange(c)
+            case "endpoints":
+                // Over the encrypted session, so the phone can trust these addresses.
+                var reply = Control("endpoints", id: c.id)
+                reply.hosts = options.endpoints
+                send(.control(reply))
             case "upload": startUpload(c)
             case "done": finishUpload(c)
             case "ack":

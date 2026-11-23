@@ -298,6 +298,7 @@ All paths are relative to the Mac user's home folder, `/`-separated; `""` is hom
 | `{"op":"list","id","path"}` | `{"op":"entries","id","path","entries":[{"name","dir","size","mtime"}]}`, folders first, then by name |
 | `{"op":"download","id","path","offset"?}` | `{"op":"meta","id","size","mime"}`, data frames from `offset`, then `{"op":"done","id","sha256"}` (SHA-256 of the whole file, b64u). To resume a download cut off part-way, the phone keeps the bytes it has, rehashes them and asks again with `offset` |
 | `{"op":"upload","id","dir","name","size"}` | `{"op":"ready","id","name"}` (the final name; a clash becomes `name (2).ext`). The phone sends data frames, then `{"op":"done","id","sha256"}`; the Mac checks the hash, moves the file into place and replies `{"op":"saved","id","name"}` |
+| `{"op":"endpoints","id"}` | `{"op":"endpoints","id","hosts":["192.168.1.20:49390", …]}`: where this computer accepts direct sessions (see "Direct connections"); empty if none |
 | `{"op":"read","id","path","offset","size"}` | Up to 2 MiB (`size`, capped) from `offset` as data frames, then `{"op":"done","id"}`; no acks (it fits one window). For streaming: a player reads what it needs next, including after seeking |
 | `{"op":"thumbnail","id","path","px"}` | A Quick Look thumbnail as JPEG, longest side `px` (64–1024, default 512): `meta` (`mime` `image/jpeg`), data frames, `done`, as for a download but without acks. `{"op":"error","code":"unsupported"}` if the Mac can't render one |
 | `{"op":"cancel","id"}` | Either side may send it. The transfer stops; a cancelled upload leaves no file |
@@ -354,3 +355,21 @@ deletes it after download, and the 1-day lifecycle rule is the backstop.
 
 **Delivery.** Large files go to Downloads (Mac, Windows, Android) or are offered from the
 notification (iPhone); only images that fit the old limit go to the clipboard.
+
+# Direct connections (same network)
+
+Through the relay, a computer can send only as fast as its internet upload (often well under
+1 MB/s at home), too slow for high-bitrate video. On the same network the phone connects
+straight to the computer instead:
+
+1. The phone opens a session through the relay as usual and sends `endpoints`. The reply
+   comes over that encrypted, authenticated session, so the addresses can be trusted.
+2. It tries each `ip:port` (private IPv4 only) with a short timeout. The first that answers
+   gets a **new session**: the same `hello` / `accept` handshake (bound to the same mailbox
+   id), keys and frames, over one TCP connection where each message is framed as
+   `u32 BE length ‖ payload` (at most 4 MiB). The relayed session is then closed.
+3. If none answers (another network, client isolation, a firewall), the phone stays on the relay.
+   If the direct connection drops, the next operation reconnects, through the relay if need be.
+
+The computer's listener accepts any TCP connection but serves nothing until a paired phone's
+signed `hello` checks out, exactly as for relay sessions.

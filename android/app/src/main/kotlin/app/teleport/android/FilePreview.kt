@@ -285,6 +285,22 @@ private fun StreamingPlayer(size: Long, read: (Long, Int, () -> Boolean) -> Byte
     var dragging by remember { mutableStateOf<Float?>(null) }
     var buffering by remember { mutableStateOf(true) }
     val main = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+    // The picture surface that's valid right now (null while there's none). The player always
+    // attaches this one: attaching a stale holder after the surface was recreated left the
+    // video black while the sound played.
+    val surface = remember { java.util.concurrent.atomic.AtomicReference<android.view.SurfaceHolder?>(null) }
+    // Preparing waits for the first picture surface: MediaPlayer only sets up a video decoder
+    // if it has a surface when playback starts. Started without one, it played the sound and
+    // never showed the picture, even once a surface was attached.
+    var prepareStarted = false  // player thread only
+    fun attach(mp: android.media.MediaPlayer) {
+        val h = surface.get()?.takeIf { it.surface?.isValid == true }
+        runCatching { mp.setDisplay(h) }
+        if (h != null && !prepareStarted) {
+            prepareStarted = true
+            runCatching { mp.prepareAsync() }
+        }
+    }
 
     fun toggle() {
         if (!ready) return
@@ -297,7 +313,7 @@ private fun StreamingPlayer(size: Long, read: (Long, Int, () -> Boolean) -> Byte
     DisposableEffect(Unit) {
         p.post { mp ->
             mp.setDataSource(source)
-            mp.setOnPreparedListener { it.start(); val d = it.duration.toFloat(); main.post { ready = true; buffering = false; duration = d; playing = true } }
+            mp.setOnPreparedListener { attach(it); it.start(); val d = it.duration.toFloat(); main.post { ready = true; buffering = false; duration = d; playing = true } }
             mp.setOnCompletionListener { main.post { playing = false } }
             mp.setOnInfoListener { _, what, _ ->
                 when (what) {
@@ -308,7 +324,7 @@ private fun StreamingPlayer(size: Long, read: (Long, Int, () -> Boolean) -> Byte
             }
             mp.setOnSeekCompleteListener { main.post { buffering = false } }
             mp.setOnErrorListener { _, _, _ -> main.post { playing = false; buffering = false }; true }
-            mp.prepareAsync()
+            attach(mp)  // prepares now if the surface is already there, else when it arrives
         }
         onDispose {
             source.close()  // pending reads give up, so the player thread frees up quickly
@@ -327,11 +343,11 @@ private fun StreamingPlayer(size: Long, read: (Long, Int, () -> Boolean) -> Byte
                 factory = { ctx ->
                     android.view.SurfaceView(ctx).apply {
                         holder.addCallback(object : android.view.SurfaceHolder.Callback {
-                            override fun surfaceCreated(h: android.view.SurfaceHolder) { p.post { it.setDisplay(h) } }
-                            override fun surfaceChanged(h: android.view.SurfaceHolder, f: Int, w: Int, hh: Int) {}
+                            override fun surfaceCreated(h: android.view.SurfaceHolder) { surface.set(h); p.post(::attach) }
+                            override fun surfaceChanged(h: android.view.SurfaceHolder, f: Int, w: Int, hh: Int) { surface.set(h); p.post(::attach) }
                             // The surface must be released before this returns, but never block
                             // the main thread on the network: wait briefly, then let it go.
-                            override fun surfaceDestroyed(h: android.view.SurfaceHolder) { p.postAndWait(250) { it.setDisplay(null) } }
+                            override fun surfaceDestroyed(h: android.view.SurfaceHolder) { surface.set(null); p.postAndWait(250, ::attach) }
                         })
                         setOnClickListener { toggle() }
                     }
@@ -436,7 +452,18 @@ private class BlockDataSource(private val total: Long, private val fetch: (Long,
                 try { lock.wait(200) } catch (e: InterruptedException) { return null }
             }
         }
-        val data = runCatching { fetch(index * block, block) { closed } }.getOrNull()
+        // A failed read (the connection dropped, or stalled and was dropped) is retried for a
+        // while: the session reconnects, and the player shows it's buffering meanwhile. Giving
+        // up at the first failure ended playback with a bare "error (1)".
+        var data: ByteArray? = null
+        val giveUp = android.os.SystemClock.elapsedRealtime() + 45_000
+        var attempt = 0
+        while (!closed) {
+            data = runCatching { fetch(index * block, block) { closed } }.getOrNull()
+            if (data != null || closed || android.os.SystemClock.elapsedRealtime() > giveUp) break
+            attempt++
+            try { Thread.sleep(minOf(attempt, 4) * 500L) } catch (e: InterruptedException) { break }
+        }
         synchronized(lock) {
             inflight -= index
             if (data != null) cache[index] = data
